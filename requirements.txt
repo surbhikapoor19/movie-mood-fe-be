@@ -1,0 +1,8 @@
+gradio[oauth]>=6.0.0
+huggingface_hub
+requests
+python-dotenv
+pytest
+transformers
+torch
+accelerate
