@@ -6,3 +6,5 @@ pytest
 transformers
 torch
 accelerate
+fastapi
+uvicorn
