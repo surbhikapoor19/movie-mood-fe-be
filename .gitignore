@@ -1,0 +1,9 @@
+## Ignore the .env file which contains sensitive information
+.env
+## Ignore our virtual enviroment directory
+frontEnd
+backEnd
+
+__pycache__
+
+
