@@ -12,7 +12,10 @@ REPO_DIR=/home/group10/movie-mood-fe-be
 # pythonEnviroments/linuxBackReqs.txt
 # pythonEnviroments/backEnd
 cd /home/cmfrench/Documents/MLops/movie-mood-fe-be # TODO: Make this more general
-# TODO: First make sure that the venv exists on our local machine. if it doesn't make it first
+
+## TODO: Update our Known hosts with the ssh key (if the VM restarts this is necessary)
+
+
 echo "copying files to machine..."
 scp -q -i ${SSH_PRIVATE_KEY} -P ${PORT} \
     .env \
@@ -31,7 +34,7 @@ ssh -i ${SSH_PRIVATE_KEY} -p ${PORT} ${NAME}@${HOST} "
     chmod +x serverEnvDeploy.sh
 
     # Run scripts
-    echo 'installing dependencies..'
+    echo 'installing dependencies...'
     ./serverEnvDeploy.sh
 "
 echo "done!"
