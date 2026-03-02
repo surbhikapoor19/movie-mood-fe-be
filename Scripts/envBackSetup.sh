@@ -20,7 +20,7 @@ echo "copying files to machine..."
 scp -q -i ${SSH_PRIVATE_KEY} -P ${PORT} \
     .env \
     back.py \
-    Scripts/serverEnvDeploy.sh \
+    Scripts/backEnvDeploy.sh \
     pythonEnviroments/linuxBackReqs.txt \
     ${NAME}@${HOST}:${REPO_DIR}/
 
@@ -31,11 +31,11 @@ echo "sshing into machine..."
 ## TODO: Error checking.
 ssh -i ${SSH_PRIVATE_KEY} -p ${PORT} ${NAME}@${HOST} " 
     cd ${REPO_DIR}
-    chmod +x serverEnvDeploy.sh
+    chmod +x backEnvDeploy.sh
 
     # Run scripts
     echo 'installing dependencies...'
-    ./serverEnvDeploy.sh
+    ./backEnvDeploy.sh
 "
 echo "done!"
 
