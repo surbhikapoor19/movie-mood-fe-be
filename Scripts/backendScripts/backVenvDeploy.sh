@@ -28,4 +28,4 @@ source ${BACKEND_VENV_NAME}/bin/activate
 
 ## install requirements if not already installed
 echo "[INFO] Installing backend requirements from: $BE_REQUIREMENTS"
-python -m pip install -r "$BE_REQUIREMENTS"
+python -m pip install --prefer-binary -r "$BE_REQUIREMENTS"
