@@ -1,13 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Make sure our required dependencies are installed
-sudo apt-get update -qq
-sudo apt-get install -y -qq python3.11 python3-pip python3.11-venv git > /dev/null
-
 ## Install our virtual enviroments on the machine - Run once to setup backend and frontend python virtual enviroments
 REPO_DIR=/home/group10/movie-mood-fe-be
-BACKEND_VENV_NAME=backEnd
+BACKEND_VENV_NAME=backVenv
 BE_REQUIREMENTS=linuxBackReqs.txt
 
 ## move into our directory
@@ -33,5 +29,3 @@ source ${BACKEND_VENV_NAME}/bin/activate
 ## install requirements if not already installed
 echo "[INFO] Installing backend requirements from: $BE_REQUIREMENTS"
 python -m pip install -r "$BE_REQUIREMENTS"
-
-echo "done!"
