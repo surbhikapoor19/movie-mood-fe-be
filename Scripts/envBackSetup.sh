@@ -152,3 +152,9 @@ REMOTE
 
 log "Deploy complete — backend running ($BACKEND_FILE)"
 echo "[INFO] Backend setup complete!"
+
+# ============================================================================
+# 6. DEPLOY FRONTEND
+# ============================================================================
+echo "[INFO] Deploying frontend..."
+bash "$SCRIPT_DIR/envFrontSetup.sh"
