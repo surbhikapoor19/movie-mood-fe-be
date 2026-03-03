@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+backEnd/
+frontEnd/
+
+# Environment / secrets
+.env
+
+# Logs
+recover.log
+*.log
+
+# Model cache
+models/
+
+# Misc
+client
+server
+open_ports.csv
