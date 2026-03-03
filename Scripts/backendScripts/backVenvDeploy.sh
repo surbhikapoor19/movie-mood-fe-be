@@ -2,14 +2,10 @@
 # backEnvDeploy.sh — Runs ON THE VM to create venv and install backend deps.
 set -euo pipefail
 
-# Make sure our required dependencies are installed
-sudo apt-get update -qq
-sudo apt-get install -y -qq python3.11 python3-pip python3.11-venv git > /dev/null
-
+## Install our virtual enviroments on the machine - Run once to setup backend and frontend python virtual enviroments
 REPO_DIR=/home/group10/movie-mood-fe-be
-BACKEND_VENV_NAME=backEnd
-# Use the requirements file passed from envBackSetup.sh, fallback to requirements_local.txt
-BE_REQUIREMENTS="${REQS_FILE:-requirements_local.txt}"
+BACKEND_VENV_NAME=backVenv
+BE_REQUIREMENTS=linuxBackReqs.txt
 
 cd ${REPO_DIR}
 
@@ -28,6 +24,4 @@ fi
 source ${BACKEND_VENV_NAME}/bin/activate
 
 echo "[INFO] Installing backend requirements from: $BE_REQUIREMENTS"
-python -m pip install -q -r "$BE_REQUIREMENTS"
-
-echo "[INFO] Backend dependencies installed!"
+python -m pip install --prefer-binary -r "$BE_REQUIREMENTS"
