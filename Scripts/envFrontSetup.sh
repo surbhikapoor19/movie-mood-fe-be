@@ -1,43 +1,60 @@
 #!/usr/bin/env bash
+# envFrontSetup.sh — Copy frontend files to VM and install dependencies + start.
+# Run from your local machine (or linux.wpi.edu).
+set -uo pipefail
 
-SSH_PRIVATE_KEY=/home/cmfrench/.ssh/wpiMlopsKey
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR_LOCAL="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Auto-detect SSH key — supports both team members
+if [ -n "${SSH_PRIVATE_KEY:-}" ]; then
+    : # use explicit override
+elif [ -f "$HOME/.ssh/MlopKey" ]; then
+    SSH_PRIVATE_KEY="$HOME/.ssh/MlopKey"
+elif [ -f "$HOME/.ssh/wpiMlopsKey" ]; then
+    SSH_PRIVATE_KEY="$HOME/.ssh/wpiMlopsKey"
+else
+    echo "[ERROR] No SSH key found. Set SSH_PRIVATE_KEY or place key at ~/.ssh/MlopKey or ~/.ssh/wpiMlopsKey"
+    exit 1
+fi
 PORT=22000
 NAME=group10
 HOST=paffenroth-23.dyn.wpi.edu
 REPO_DIR=/home/group10/movie-mood-fe-be
-## Copy only neccessary files to backend
-cd /home/cmfrench/Documents/MLops/movie-mood-fe-be # TODO: Make this more general
 
-## TODO: Update our Known hosts with the ssh key (if the VM restarts this is necessary)
+cd "$REPO_DIR_LOCAL"
 
-## Copy Frontend files to Frontend machine
-echo "[INFO] Copying files to machine..."
-scp -q -i ${SSH_PRIVATE_KEY} -P ${PORT} \
+# Clear stale host key
+ssh-keygen -R "[${HOST}]:${PORT}" 2>/dev/null || true
+
+echo "[INFO] Copying frontend files to VM..."
+scp -q -i ${SSH_PRIVATE_KEY} -P ${PORT} -o StrictHostKeyChecking=no \
     front.py \
     Scripts/frontEnvDeploy.sh \
     Scripts/activateFrontend.sh \
     pythonEnviroments/linuxFrontReqs.txt \
     ${NAME}@${HOST}:${REPO_DIR}/
 
-echo "[INFO] SSHing into machine..."
+# Copy .env if it exists
+if [ -f .env ]; then
+    scp -q -i ${SSH_PRIVATE_KEY} -P ${PORT} -o StrictHostKeyChecking=no \
+        .env ${NAME}@${HOST}:${REPO_DIR}/
+fi
 
-## TODO: Error checking.
-## Install Frontend Dependencies
-ssh -i ${SSH_PRIVATE_KEY} -p ${PORT} ${NAME}@${HOST} " 
+echo "[INFO] SSHing into machine to install dependencies..."
+ssh -i ${SSH_PRIVATE_KEY} -p ${PORT} -o StrictHostKeyChecking=no ${NAME}@${HOST} "
     cd ${REPO_DIR}
     chmod +x frontEnvDeploy.sh
     chmod +x activateFrontend.sh
 
-    # Run scripts
     echo '[INFO] Installing dependencies...'
     ./frontEnvDeploy.sh
 "
 
-## Start our frontend Script
-ssh -i ${SSH_PRIVATE_KEY} -p ${PORT} ${NAME}@${HOST} " 
+echo "[INFO] Starting frontend..."
+ssh -i ${SSH_PRIVATE_KEY} -p ${PORT} -o StrictHostKeyChecking=no ${NAME}@${HOST} "
     cd ${REPO_DIR}
-
-    # Start server
     ./activateFrontend.sh
 "
+echo "[INFO] Frontend setup complete!"
 
