@@ -7,11 +7,24 @@ set -uo pipefail
 
 HEALTH_URL="http://paffenroth-23.dyn.wpi.edu:9010/health"
 
-# In --cron mode, skip deploy if backend is healthy (status: "ok")
+# In --cron mode, skip if healthy OR if another deploy is already running
 if [ "${1:-}" = "--cron" ]; then
     if curl -sf --max-time 10 "$HEALTH_URL" > /dev/null 2>&1; then
         exit 0  # Backend is responding (ok or starting), leave it alone
     fi
+
+    LOCK_FILE="/tmp/backDeploy.lock"
+    if [ -f "$LOCK_FILE" ]; then
+        # Check if lock is stale (older than 15 minutes)
+        if [ "$(find "$LOCK_FILE" -mmin +15 2>/dev/null)" ]; then
+            rm -f "$LOCK_FILE"
+        else
+            exit 0  # Another deploy is still running
+        fi
+    fi
+    trap 'rm -f "$LOCK_FILE"' EXIT
+    touch "$LOCK_FILE"
+
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Backend DOWN — triggering deploy"
 fi
 
