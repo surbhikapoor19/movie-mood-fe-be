@@ -28,6 +28,12 @@ if [ "${1:-}" = "--cron" ]; then
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Backend DOWN — triggering deploy"
 fi
 
+# Load ssh-agent env (needed for passphrase-protected keys in cron)
+AGENT_ENV="$HOME/.ssh/agent_env"
+if [ -f "$AGENT_ENV" ]; then
+    . "$AGENT_ENV" > /dev/null
+fi
+
 PORT=22010
 NAME=group10
 HOST=paffenroth-23.dyn.wpi.edu
