@@ -1,4 +1,19 @@
 #!/usr/bin/env bash
+# backDeploy.sh — Deploy backend to VM. Use --cron for auto-recovery mode.
+#
+# Manual:  bash Scripts/backendScripts/backDeploy.sh
+# Cron:    bash Scripts/backendScripts/backDeploy.sh --cron
+set -uo pipefail
+
+HEALTH_URL="http://paffenroth-23.dyn.wpi.edu:9010/health"
+
+# In --cron mode, skip deploy if backend is healthy (status: "ok")
+if [ "${1:-}" = "--cron" ]; then
+    if curl -sf --max-time 10 "$HEALTH_URL" > /dev/null 2>&1; then
+        exit 0  # Backend is responding (ok or starting), leave it alone
+    fi
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Backend DOWN — triggering deploy"
+fi
 
 PORT=22010
 NAME=group10
