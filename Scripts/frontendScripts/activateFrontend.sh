@@ -12,7 +12,7 @@ SESSION_NAME="frontend"
 tmux new-session -d -s "$SESSION_NAME" "\
     cd ${REPO_DIR} &&\
     source ${FRONTEND_VENV}/bin/activate &&\
-    export BACKEND_URL=${BACKEND_URL}
+    export BACKEND_URL=${BACKEND_URL} &&\
     python front.py\
 "
 
