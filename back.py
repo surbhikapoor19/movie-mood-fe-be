@@ -30,7 +30,6 @@ LOCAL_MODEL = os.environ.get("LOCAL_MODEL", "false").lower() == "true"
 LOCAL_MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"  # Smaller model for local use (~1GB)
 # Alternative larger models:
 # LOCAL_MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"  # ~3GB
-# LOCAL_MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.3"  # ~14GB
 
 # API model configuration
 API_MODEL_NAME = "openai/gpt-oss-120b"
@@ -39,7 +38,7 @@ API_MODEL_NAME = "openai/gpt-oss-120b"
 # TMDB API CONFIGURATION
 # ============================================================================
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
-TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w300"
+TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w300"  
 
 
 def get_tmdb_api_key():
