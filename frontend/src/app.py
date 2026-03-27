@@ -202,5 +202,4 @@ with gr.Blocks(css=custom_css) as demo:
     p_radio.change(fn=set_pace, inputs=p_radio, outputs=[p_state, p_status])
 
 
-if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7010)
+demo.launch()

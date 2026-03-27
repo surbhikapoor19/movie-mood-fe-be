@@ -761,7 +761,3 @@ def chat_endpoint(req: ChatRequest):
     print(f"[INFO] Request complete")
     print(f"{'='*60}\n")
     return {"response": result}
-
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=9010)

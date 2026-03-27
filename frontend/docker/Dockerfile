@@ -6,8 +6,7 @@ RUN pip install --upgrade pip
 
 # Install python libraries
 # Use --no-cache-dir to avoid storing pip's download cache.
-RUN pip install --no-cache-dir requests fastapi pydantic uvicorn dotenv
-RUN pip install --no-cache-dir transformers torch
+RUN pip install --no-cache-dir requests dotenv gradio
 
 # Set the working directory inside our container
 WORKDIR /app
@@ -15,8 +14,14 @@ WORKDIR /app
 # Copy application source code into container
 COPY src /app/src
 
-# Document that app listens on port 23067
-EXPOSE 23067
+# Document that app listens on port 23069
+EXPOSE 6767
 
-# Start FastAPI app with Uvicorn
-CMD ["uvicorn", "src.app:app", "--host", "0.0.0.0", "--port", "23067"]
+# Tell Gradio to listen on all network interfaces inside the container.
+ENV GRADIO_SERVER_NAME=0.0.0.0
+
+# Tell Gradio to use port 6767 inside the container.
+ENV GRADIO_SERVER_PORT=6767
+
+# Startup our app
+CMD ["python", "src/app.py"]
