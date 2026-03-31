@@ -751,7 +751,7 @@ def chat_endpoint(req: ChatRequest):
 
         print(f"[INFO] Step 5: Running LLM inference...")
         if LOCAL_MODEL:
-            response = run_local_model(messages, req.max_tokens, req.temperature)
+            response = run_locals_model(messages, req.max_tokens, req.temperature)
         else:
             response = run_api_model(messages, req.max_tokens, req.temperature, req.top_p)
 
@@ -761,7 +761,3 @@ def chat_endpoint(req: ChatRequest):
     print(f"[INFO] Request complete")
     print(f"{'='*60}\n")
     return {"response": result}
-
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=9010)

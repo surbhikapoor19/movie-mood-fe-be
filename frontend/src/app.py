@@ -1,5 +1,5 @@
 """
-Calls the FastAPI backend at http://localhost:9010/chat.
+Calls the FastAPI backend .
 """
 
 import os
@@ -19,7 +19,7 @@ except ImportError:
 # ============================================================================
 LOCAL_MODEL = os.environ.get("LOCAL_MODEL", "false").lower() == "true"
 
-BACKEND_URL = os.environ.get("BACKEND_URL", "http://paffenroth-23.dyn.wpi.edu:9010")
+BACKEND_URL = os.environ.get("BACKEND_URL")
 
 # ============================================================================
 # CUSTOM CSS  
@@ -202,5 +202,4 @@ with gr.Blocks(css=custom_css) as demo:
     p_radio.change(fn=set_pace, inputs=p_radio, outputs=[p_state, p_status])
 
 
-if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7010)
+demo.launch()
