@@ -8,6 +8,7 @@ Test/
 
 # Environment / secrets
 .env
+hf_token.txt
 
 # Logs
 recover.log
