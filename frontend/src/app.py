@@ -1,5 +1,5 @@
 """
-Calls the FastAPI backend at http://localhost:9010/chat.
+Calls the FastAPI backend .
 """
 
 import os
@@ -19,7 +19,7 @@ except ImportError:
 # ============================================================================
 LOCAL_MODEL = os.environ.get("LOCAL_MODEL", "false").lower() == "true"
 
-BACKEND_URL = os.environ.get("BACKEND_URL", "http://paffenroth-23.dyn.wpi.edu:9010")
+BACKEND_URL = os.environ.get("BACKEND_URL")
 
 # ============================================================================
 # CUSTOM CSS  

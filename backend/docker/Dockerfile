@@ -15,8 +15,12 @@ WORKDIR /app
 # Copy application source code into container
 COPY src /app/src
 
-# Document that app listens on port 23067
-EXPOSE 23067
+# Import our Port (default 6060)
+ARG PORT=6060
+ENV PORT=$PORT
+
+# Document that app listens on given port
+EXPOSE $PORT
 
 # Start FastAPI app with Uvicorn
-CMD ["uvicorn", "src.app:app", "--host", "0.0.0.0", "--port", "23067"]
+CMD uvicorn src.app:app --host 0.0.0.0 --port $PORT

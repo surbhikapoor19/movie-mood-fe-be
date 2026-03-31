@@ -14,14 +14,18 @@ WORKDIR /app
 # Copy application source code into container
 COPY src /app/src
 
-# Document that app listens on port 23069
-EXPOSE 6767
+# Import our Port (default 6161)
+ARG PORT=6161
+ENV PORT=$PORT
+
+# Document that app listens on our port
+EXPOSE $PORT
 
 # Tell Gradio to listen on all network interfaces inside the container.
 ENV GRADIO_SERVER_NAME=0.0.0.0
 
 # Tell Gradio to use port 6767 inside the container.
-ENV GRADIO_SERVER_PORT=6767
+ENV GRADIO_SERVER_PORT=$PORT
 
 # Startup our app
 CMD ["python", "src/app.py"]

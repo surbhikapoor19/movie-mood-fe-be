@@ -1,0 +1,37 @@
+services:
+  backend:
+    build:
+      context: backend
+      dockerfile: docker/Dockerfile
+      args:
+        PORT: ${BACKEND_PORT}
+    image: movie-backend
+    environment:
+      - LOCAL_MODEL=${LOCAL_MODEL}
+    ports:
+      - 22060:${BACKEND_PORT}
+    networks:
+      - movie_net
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: frontend
+      dockerfile: docker/Dockerfile
+      args:
+        - PORT=${FRONTEND_PORT}
+    image: movie-frontend
+    environment:
+      BACKEND_URL: "http://backend:${BACKEND_PORT}"
+    depends_on:
+      - backend
+    ports:
+      - 22061:${FRONTEND_PORT}
+    networks:
+      - movie_net
+    restart: unless-stopped
+
+networks:
+  movie_net:
+    driver: bridge
+  
