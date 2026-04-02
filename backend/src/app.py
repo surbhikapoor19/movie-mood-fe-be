@@ -20,6 +20,13 @@ try:
 except ImportError:
     pass
 
+# Load HF token from Docker secret if available
+try:
+    with open("/run/secrets/hf_token") as f:
+        os.environ["HF_TOKEN"] = f.read().strip()
+except FileNotFoundError:
+    pass
+
 # ============================================================================
 # CONFIGURATION
 # ============================================================================

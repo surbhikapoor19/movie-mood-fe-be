@@ -7,7 +7,9 @@ services:
         PORT: ${BACKEND_PORT}
     image: movie-backend
     environment:
-      - LOCAL_MODEL=${LOCAL_MODEL}
+      LOCAL_MODEL: ${LOCAL_MODEL}
+    secrets:
+      - hf_token
     ports:
       - 22060:${BACKEND_PORT}
     networks:
@@ -34,4 +36,7 @@ services:
 networks:
   movie_net:
     driver: bridge
-  
+
+secrets:
+  hf_token:
+    file: hf_token.txt

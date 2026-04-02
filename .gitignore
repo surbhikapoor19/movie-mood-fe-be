@@ -7,7 +7,9 @@ frontEnd/
 Test/
 
 # Environment / secrets
-.env
+# .env
+hf_token.txt
+.devcontainer
 
 # Logs
 recover.log
