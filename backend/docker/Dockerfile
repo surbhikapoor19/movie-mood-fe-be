@@ -2,12 +2,15 @@
 FROM python:3.11.15-slim
 
 # Upgrade pip to a newer version
-RUN pip install --upgrade pip
+RUN pip install --upgrade pip 
 
 # Install python libraries
 # Use --no-cache-dir to avoid storing pip's download cache.
 RUN pip install --no-cache-dir requests fastapi pydantic uvicorn dotenv
 RUN pip install --no-cache-dir transformers torch
+
+# Install curl
+RUN apt-get update && apt-get install -y curl
 
 # Set the working directory inside our container
 WORKDIR /app

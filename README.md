@@ -11,3 +11,6 @@ hf_oauth: true
 hf_oauth_scopes:
 - inference-api
 ---
+## Starting this repository.
+Make sure to create a ".env.local" file and include important tokens there.
+The ".env.local.example" file is a template of this file without the api keys inside.
