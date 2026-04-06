@@ -33,10 +33,25 @@ services:
       - movie_net
     restart: unless-stopped
 
+  ngrok:
+    image: ngrok/ngrok:latest
+    depends_on:
+    - frontend
+    command:
+    - "http"
+    - "http://frontend:${FRONTEND_PORT}"
+    networks:
+    - movie_net
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+    restart: unless-stopped
+
 networks:
   movie_net:
     driver: bridge
 
 secrets:
   hf_token:
-    file: hf_token.txt
+    environment: HF_TOKEN
+  ngrok_token:
+    environment: NGROK_AUTHTOKEN
