@@ -16,8 +16,8 @@ services:
       start_interval: 3s
     environment:
       LOCAL_MODEL: ${LOCAL_MODEL}
-    secrets:
-      - hf_token
+      HF_TOKEN: ${HF_TOKEN}
+      TMDB_API_KEY: ${TMDB_API_KEY}
     ports:
       - 22060:${BACKEND_PORT}
     networks:
@@ -58,9 +58,3 @@ services:
 networks:
   movie_net:
     driver: bridge
-
-secrets:
-  hf_token:
-    environment: HF_TOKEN
-  ngrok_token:
-    environment: NGROK_AUTHTOKEN
