@@ -1,11 +1,19 @@
 services:
   backend:
+    container_name: movie-backend
     build:
       context: backend
       dockerfile: docker/Dockerfile
       args:
         PORT: ${BACKEND_PORT}
     image: movie-backend
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://backend:${BACKEND_PORT}/health"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+      start_interval: 3s
     environment:
       LOCAL_MODEL: ${LOCAL_MODEL}
     secrets:
@@ -26,7 +34,8 @@ services:
     environment:
       BACKEND_URL: "http://backend:${BACKEND_PORT}"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     ports:
       - 22061:${FRONTEND_PORT}
     networks:
