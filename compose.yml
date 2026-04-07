@@ -20,6 +20,8 @@ services:
       TMDB_API_KEY: ${TMDB_API_KEY}
     ports:
       - 22060:${BACKEND_PORT}
+      - 22062:8000   # Prometheus Python metrics
+      - 22064:9100   # Node exporter
     networks:
       - movie_net
     restart: unless-stopped
@@ -38,9 +40,44 @@ services:
         condition: service_healthy
     ports:
       - 22061:${FRONTEND_PORT}
+      - 22063:8001   # Prometheus Python metrics
+      - 22065:9100   # Node exporter
     networks:
       - movie_net
     restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - 22066:9090
+    networks:
+      - movie_net
+    restart: unless-stopped
+    depends_on:
+      - backend
+      - frontend
+
+  grafana:
+    image: grafana/grafana:latest
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+      - ./grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml
+      - ./grafana/movie-dashboard.json:/var/lib/grafana/dashboards/movie-dashboard.json
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - 22067:3000
+    networks:
+      - movie_net
+    restart: unless-stopped
+    depends_on:
+      - prometheus
 
   ngrok:
     image: ngrok/ngrok:latest
@@ -58,3 +95,7 @@ services:
 networks:
   movie_net:
     driver: bridge
+
+volumes:
+  prometheus_data:
+  grafana_data:

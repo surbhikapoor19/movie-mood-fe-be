@@ -3,9 +3,23 @@ Calls the FastAPI backend .
 """
 
 import os
+import time
 import requests as http_client
 
 import gradio as gr
+from prometheus_client import Counter, Summary, Gauge, start_http_server
+
+# ============================================================================
+# PROMETHEUS METRICS
+# ============================================================================
+FRONTEND_PAGE_LOADS = Counter('frontend_page_loads_total', 'Total page loads / chat submissions')
+FRONTEND_REQUESTS_SUCCESSFUL = Counter('frontend_requests_successful_total', 'Successful backend calls from frontend')
+FRONTEND_REQUESTS_FAILED = Counter('frontend_requests_failed_total', 'Failed backend calls from frontend')
+FRONTEND_REQUEST_DURATION = Summary('frontend_request_duration_seconds', 'Round-trip time from frontend to backend and back')
+FRONTEND_ACTIVE_REQUESTS = Gauge('frontend_active_requests', 'Chat requests currently in flight from frontend')
+
+# Start Prometheus metrics HTTP server on port 8001
+start_http_server(8001)
 
 # Load environment variables from .env file for local development
 try:
@@ -88,12 +102,22 @@ def respond(
         "temperature": temperature,
         "top_p": top_p,
     }
+
+    FRONTEND_PAGE_LOADS.inc()
+    FRONTEND_ACTIVE_REQUESTS.inc()
+    start_time = time.time()
+
     try:
         resp = http_client.post(f"{BACKEND_URL}/chat", json=payload, timeout=300)
         resp.raise_for_status()
+        FRONTEND_REQUESTS_SUCCESSFUL.inc()
         yield resp.json()["response"]
     except Exception as e:
+        FRONTEND_REQUESTS_FAILED.inc()
         yield f"Error contacting backend: {e}"
+    finally:
+        FRONTEND_REQUEST_DURATION.observe(time.time() - start_time)
+        FRONTEND_ACTIVE_REQUESTS.dec()
 
 
 # ============================================================================
