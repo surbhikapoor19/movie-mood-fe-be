@@ -1,13 +1,23 @@
 services:
   backend:
+    container_name: movie-backend
     build:
       context: backend
       dockerfile: docker/Dockerfile
       args:
         PORT: ${BACKEND_PORT}
     image: movie-backend
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://backend:${BACKEND_PORT}/health"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+      start_interval: 3s
     environment:
-      - LOCAL_MODEL=${LOCAL_MODEL}
+      LOCAL_MODEL: ${LOCAL_MODEL}
+      HF_TOKEN: ${HF_TOKEN}
+      TMDB_API_KEY: ${TMDB_API_KEY}
     ports:
       - 22060:${BACKEND_PORT}
       - 22062:8000   # Prometheus Python metrics
@@ -26,7 +36,8 @@ services:
     environment:
       BACKEND_URL: "http://backend:${BACKEND_PORT}"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     ports:
       - 22061:${FRONTEND_PORT}
       - 22063:8001   # Prometheus Python metrics
@@ -67,6 +78,19 @@ services:
     restart: unless-stopped
     depends_on:
       - prometheus
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    depends_on:
+    - frontend
+    command:
+    - "http"
+    - "http://frontend:${FRONTEND_PORT}"
+    networks:
+    - movie_net
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+    restart: unless-stopped
 
 networks:
   movie_net:

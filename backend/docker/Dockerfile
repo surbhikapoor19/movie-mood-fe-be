@@ -2,7 +2,7 @@
 FROM python:3.11.15-slim
 
 # Upgrade pip to a newer version
-RUN pip install --upgrade pip
+RUN pip install --upgrade pip 
 
 # Install python libraries
 # Use --no-cache-dir to avoid storing pip's download cache.
@@ -10,8 +10,8 @@ RUN pip install --no-cache-dir requests fastapi pydantic uvicorn dotenv
 RUN pip install --no-cache-dir transformers torch
 RUN pip install --no-cache-dir prometheus_client
 
-# Install prometheus-node-exporter for container-level system metrics
-RUN apt-get update && apt-get install -y prometheus-node-exporter && rm -rf /var/lib/apt/lists/*
+# Install prometheus-node-exporter and curl
+RUN apt-get update && apt-get install -y prometheus-node-exporter curl && rm -rf /var/lib/apt/lists/*
 
 # Set the working directory inside our container
 WORKDIR /app
