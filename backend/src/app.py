@@ -6,31 +6,12 @@ FastAPI routes that expose the existing functions as HTTP endpoints.
 import json
 import re
 import os
-import time
 import requests
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
-from prometheus_client import Counter, Summary, Gauge, start_http_server
-
-# ============================================================================
-# PROMETHEUS METRICS
-# ============================================================================
-REQUEST_COUNT = Counter('chat_requests_total', 'Total chat requests received')
-SUCCESSFUL_REQUESTS = Counter('chat_requests_successful_total', 'Chat requests that succeeded')
-FAILED_REQUESTS = Counter('chat_requests_failed_total', 'Chat requests that failed')
-REQUEST_DURATION = Summary('chat_request_duration_seconds', 'End-to-end time per chat request')
-LLM_INFERENCE_DURATION = Summary('llm_inference_duration_seconds', 'Time spent in LLM inference')
-TMDB_LOOKUPS = Counter('tmdb_lookups_total', 'Total TMDB API lookups')
-TMDB_FAILURES = Counter('tmdb_lookups_failed_total', 'Failed TMDB API lookups')
-ACTIVE_REQUESTS = Gauge('active_requests', 'Number of chat requests currently being processed')
-STRUCTURED_MODE_COUNT = Counter('structured_mode_total', 'Requests handled in structured recommendation mode')
-CONVERSATIONAL_MODE_COUNT = Counter('conversational_mode_total', 'Requests handled in conversational mode')
-
-# Start Prometheus metrics HTTP server on port 8000
-start_http_server(8000)
 
 # Load environment variables from .env file for local development
 try:
@@ -89,14 +70,13 @@ def search_movie_tmdb(title: str, year: int = None) -> dict | None:
         params["year"] = year
     
     try:
-        TMDB_LOOKUPS.inc()
         print(f"[INFO] TMDB: Searching for '{title}' ({year or 'any year'})...")
         response = requests.get(f"{TMDB_BASE_URL}/search/movie", params=params, timeout=10)
         response.raise_for_status()
         data = response.json()
         results = data.get("results", [])
         print(f"[DEBUG] TMDB: Search results: {results}")
-
+        
         if results:
             # Return the first (most relevant) result
             found = results[0]
@@ -105,7 +85,6 @@ def search_movie_tmdb(title: str, year: int = None) -> dict | None:
         print(f"[INFO] TMDB: No results found for '{title}'")
         return None
     except requests.RequestException as e:
-        TMDB_FAILURES.inc()
         print(f"[WARN] TMDB: Request failed for '{title}': {e}")
         return None
 
@@ -212,6 +191,32 @@ if LOCAL_MODEL:
 if not LOCAL_MODEL:
     print("[MODE] Using HuggingFace Inference API")
     from huggingface_hub import InferenceClient
+
+
+# ============================================================================
+# Lazy loader for local model — used when UI toggle picks
+# "Local Model" at runtime even though LOCAL_MODEL env was false
+# If the server started in API mode (LOCAL_MODEL=false), the local model
+# was never loaded. But now the user can switch to local from the UI, so
+# we need a way to load it on-demand the first time it's requested.
+# ============================================================================
+def get_local_pipeline():
+    """Lazy-load: downloads and loads the local model only the first time it's called.
+    After that, returns the cached pipeline."""
+    global local_pipeline
+    if local_pipeline is None:
+        print(f"[MODE] Lazy-loading local model: {LOCAL_MODEL_NAME} (first request, may take a while...)")
+        from transformers import pipeline
+        import torch
+        local_pipeline = pipeline(
+            "text-generation",
+            model=LOCAL_MODEL_NAME,
+            device="cpu",
+            torch_dtype=torch.float32,
+        )
+        print(f"[MODE] Local model lazy-loaded successfully on CPU!")
+    return local_pipeline
+
 
 # ============================================================================
 # PROMPT ENGINEERING (from notebook)
@@ -548,19 +553,22 @@ def run_local_model(messages: list[dict], max_tokens: int, temperature: float) -
         effective_max_tokens = min(max_tokens, 256)
         print(f"[INFO] Parameters: max_tokens={effective_max_tokens} (capped from {max_tokens}), temperature={temperature}")
         print(f"[INFO] Number of messages in context: {len(messages)}")
-
+        
+        # Use get_local_pipeline() instead of global local_pipeline
+        # If server started in API mode but user toggles to Local in UI,
+        # the global local_pipeline would be None. This lazy-loads it.
+        pipe = get_local_pipeline()
+        
         print(f"[INFO] Running inference on {LOCAL_MODEL_NAME}...")
-        start_time = time.time()
-        result = local_pipeline(
+        result = pipe(
             messages,
             max_new_tokens=effective_max_tokens,
             do_sample=True,
             temperature=max(temperature, 0.01), # as deterministic- too small a model let be creative
-            pad_token_id=local_pipeline.tokenizer.eos_token_id,
+            pad_token_id=pipe.tokenizer.eos_token_id,
         )
-        LLM_INFERENCE_DURATION.observe(time.time() - start_time)
         print(f"[INFO] Inference complete, extracting response...")
-
+        
         raw_content = result[0]["generated_text"][-1]["content"]
         print(f"[INFO] Response generated ({len(raw_content)} characters)")
         return raw_content
@@ -583,7 +591,6 @@ def run_api_model(messages: list[dict], max_tokens: int, temperature: float, top
     print(f"[INFO] Sending request to HuggingFace API...")
     response = ""
     chunk_count = 0
-    start_time = time.time()
     for chunk in client.chat_completion(
         messages,
         max_tokens=max_tokens,
@@ -594,7 +601,6 @@ def run_api_model(messages: list[dict], max_tokens: int, temperature: float, top
         if chunk.choices and chunk.choices[0].delta.content:
             response += chunk.choices[0].delta.content
             chunk_count += 1
-    LLM_INFERENCE_DURATION.observe(time.time() - start_time)
     print(f"[INFO] API response complete ({len(response)} characters, {chunk_count} chunks)")
     return response
 
@@ -717,6 +723,9 @@ app.add_middleware(
 )
 
 
+# use_local_model field to ChatRequest
+# Frontend sends the user's toggle choice in this field.
+# Backend reads it to decide which model to use for THIS request.
 class ChatRequest(BaseModel):
     message: str
     history: list[dict] = []
@@ -729,6 +738,7 @@ class ChatRequest(BaseModel):
     max_tokens: int = 512
     temperature: float = 0.3
     top_p: float = 0.95
+    use_local_model: bool | None = None   # NEW FIELD from frontend toggle
 
 
 @app.get("/health")
@@ -736,74 +746,73 @@ def health():
     return {"status": "ok", "mode": "local" if LOCAL_MODEL else "api"}
 
 
+# /chat endpoint now checks req.use_local_model first
+# Before, it only checked the LOCAL_MODEL env var (set at startup).
+# Now it checks the UI toggle value FIRST. If the frontend didn't send
+# a toggle value, it falls back to the env var.
 @app.post("/chat")
 def chat_endpoint(req: ChatRequest):
     """Single endpoint replicating the exact logic of the original respond() function."""
-    REQUEST_COUNT.inc()
-    ACTIVE_REQUESTS.inc()
-    start_time = time.time()
 
-    try:
-        message = req.message
-        genre = req.genre
-        mood = req.mood
-        era = req.era
-        viewing_pref = req.viewing_pref
-        pace = req.pace
+    # Determine which model to use per-request
+    # Priority: UI toggle (req.use_local_model) > env var (LOCAL_MODEL)
+    if req.use_local_model is not None:
+        use_local = req.use_local_model       # User chose from UI
+    else:
+        use_local = LOCAL_MODEL               # Fallback to env var
 
-        print(f"\n{'='*60}")
-        print(f"[INFO] New chat request received ({'LOCAL' if LOCAL_MODEL else 'API'} MODE)")
-        print(f"[INFO] User message: {message[:100]}..." if len(message) > 100 else f"[INFO] User message: {message}")
-        print(f"[INFO] Preferences - Genre: {genre}, Mood: {mood}, Era: {era}, Viewing: {viewing_pref}, Pace: {pace}")
+    message = req.message
+    genre = req.genre
+    mood = req.mood
+    era = req.era
+    viewing_pref = req.viewing_pref
+    pace = req.pace
 
-        print(f"[INFO] Step 1: Building user preferences...")
-        user_answers, is_recommendation_request, all_preferences_set = prepare_request(
-            message, genre, mood, era, viewing_pref, pace
-        )
-        print(f"[INFO] Step 2: Detected recommendation request: {is_recommendation_request}")
-        print(f"[INFO] All preferences set: {all_preferences_set}")
+    print(f"\n{'='*60}")
+    print(f"[INFO] New chat request received ({'LOCAL' if use_local else 'API'} MODE)")
+    print(f"[INFO] Model selection: {'UI toggle' if req.use_local_model is not None else 'env var default'}")
+    print(f"[INFO] User message: {message[:100]}..." if len(message) > 100 else f"[INFO] User message: {message}")
+    print(f"[INFO] Preferences - Genre: {genre}, Mood: {mood}, Era: {era}, Viewing: {viewing_pref}, Pace: {pace}")
 
-        if is_recommendation_request and all_preferences_set:
-            STRUCTURED_MODE_COUNT.inc()
-            print(f"[INFO] Step 3: Using STRUCTURED recommendation mode")
-            print(f"[INFO] Step 4: Building few-shot prompt with examples...")
-            messages = build_messages(user_answers)
-            print(f"[INFO] Prompt built with {len(messages)} messages")
 
-            print(f"[INFO] Step 5: Running LLM inference...")
-            if LOCAL_MODEL:
-                response = run_local_model(messages, req.max_tokens, req.temperature)
-            else:
-                response = run_api_model(messages, req.max_tokens, req.temperature, req.top_p)
 
-            result = process_structured_response(response, message)
+    print(f"[INFO] Step 1: Building user preferences...")
+    user_answers, is_recommendation_request, all_preferences_set = prepare_request(
+        message, genre, mood, era, viewing_pref, pace
+    )
+    print(f"[INFO] Step 2: Detected recommendation request: {is_recommendation_request}")
+    print(f"[INFO] All preferences set: {all_preferences_set}")
+
+    if is_recommendation_request and all_preferences_set:
+        print(f"[INFO] Step 3: Using STRUCTURED recommendation mode")
+        print(f"[INFO] Step 4: Building few-shot prompt with examples...")
+        messages = build_messages(user_answers)
+        print(f"[INFO] Prompt built with {len(messages)} messages")
+
+        print(f"[INFO] Step 5: Running LLM inference...")
+        if use_local:
+            response = run_local_model(messages, req.max_tokens, req.temperature)
         else:
-            CONVERSATIONAL_MODE_COUNT.inc()
-            print(f"[INFO] Step 3: Using CONVERSATIONAL mode")
-            print(f"[INFO] Step 4: Building conversation context...")
-            messages = [{"role": "system", "content": build_conversational_context(genre, mood, era, viewing_pref, pace)}]
-            messages.extend(req.history)
-            messages.append({"role": "user", "content": message})
-            print(f"[INFO] Context built with {len(messages)} messages (including {len(req.history)} history)")
+            response = run_api_model(messages, req.max_tokens, req.temperature, req.top_p)
 
-            print(f"[INFO] Step 5: Running LLM inference...")
-            if LOCAL_MODEL:
-                response = run_locals_model(messages, req.max_tokens, req.temperature)
-            else:
-                response = run_api_model(messages, req.max_tokens, req.temperature, req.top_p)
+        result = process_structured_response(response, message)
+    else:
+        print(f"[INFO] Step 3: Using CONVERSATIONAL mode")
+        print(f"[INFO] Step 4: Building conversation context...")
+        messages = [{"role": "system", "content": build_conversational_context(genre, mood, era, viewing_pref, pace)}]
+        messages.extend(req.history)
+        messages.append({"role": "user", "content": message})
+        print(f"[INFO] Context built with {len(messages)} messages (including {len(req.history)} history)")
 
-            print(f"[INFO] Step 6: Processing conversational response...")
-            result = process_conversational_response(response)
+        print(f"[INFO] Step 5: Running LLM inference...")
+        if use_local:
+            response = run_local_model(messages, req.max_tokens, req.temperature)
+        else:
+            response = run_api_model(messages, req.max_tokens, req.temperature, req.top_p)
 
-        SUCCESSFUL_REQUESTS.inc()
-        print(f"[INFO] Request complete")
-        print(f"{'='*60}\n")
-        return {"response": result}
+        print(f"[INFO] Step 6: Processing conversational response...")
+        result = process_conversational_response(response)
 
-    except Exception as e:
-        FAILED_REQUESTS.inc()
-        raise e
-
-    finally:
-        REQUEST_DURATION.observe(time.time() - start_time)
-        ACTIVE_REQUESTS.dec()
+    print(f"[INFO] Request complete")
+    print(f"{'='*60}\n")
+    return {"response": result}

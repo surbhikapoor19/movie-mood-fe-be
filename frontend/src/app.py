@@ -3,23 +3,9 @@ Calls the FastAPI backend .
 """
 
 import os
-import time
 import requests as http_client
 
 import gradio as gr
-from prometheus_client import Counter, Summary, Gauge, start_http_server
-
-# ============================================================================
-# PROMETHEUS METRICS
-# ============================================================================
-FRONTEND_PAGE_LOADS = Counter('frontend_page_loads_total', 'Total page loads / chat submissions')
-FRONTEND_REQUESTS_SUCCESSFUL = Counter('frontend_requests_successful_total', 'Successful backend calls from frontend')
-FRONTEND_REQUESTS_FAILED = Counter('frontend_requests_failed_total', 'Failed backend calls from frontend')
-FRONTEND_REQUEST_DURATION = Summary('frontend_request_duration_seconds', 'Round-trip time from frontend to backend and back')
-FRONTEND_ACTIVE_REQUESTS = Gauge('frontend_active_requests', 'Chat requests currently in flight from frontend')
-
-# Start Prometheus metrics HTTP server on port 8001
-start_http_server(8001)
 
 # Load environment variables from .env file for local development
 try:
@@ -58,6 +44,12 @@ h1 {
     color: #663356;
     text-shadow: 2px 2px 4px #693256;
 }
+/* Styling for the model toggle section */
+.model-toggle {
+    background-color: #f0e6f0;
+    border-radius: 10px;
+    padding: 10px;
+}
 """
 
 # ============================================================================
@@ -72,8 +64,8 @@ PACE_OPTIONS = ["Fast-paced", "Slow & character-driven", "Balanced"]
 
 # ============================================================================
 # RESPOND FUNCTION
-# The original respond() called model functions directly.
-# Here it makes one HTTP POST to the backend instead — everything else is identical.
+# CHANGED: Added use_local_model parameter to receive the toggle value
+# CHANGED: Added "use_local_model" to the payload sent to backend
 # ============================================================================
 
 def respond(
@@ -88,7 +80,11 @@ def respond(
     era,
     viewing_pref,
     pace,
+    use_local_model,       #receives the toggle value from UI
 ):
+    #convert radio choice to boolean for backend
+    local_model = (use_local_model == "Local Model")
+
     payload = {
         "message": message,
         "history": history,
@@ -101,23 +97,14 @@ def respond(
         "max_tokens": max_tokens,
         "temperature": temperature,
         "top_p": top_p,
+        "use_local_model": local_model,   #Tells backend which model to use
     }
-
-    FRONTEND_PAGE_LOADS.inc()
-    FRONTEND_ACTIVE_REQUESTS.inc()
-    start_time = time.time()
-
     try:
         resp = http_client.post(f"{BACKEND_URL}/chat", json=payload, timeout=300)
         resp.raise_for_status()
-        FRONTEND_REQUESTS_SUCCESSFUL.inc()
         yield resp.json()["response"]
     except Exception as e:
-        FRONTEND_REQUESTS_FAILED.inc()
         yield f"Error contacting backend: {e}"
-    finally:
-        FRONTEND_REQUEST_DURATION.observe(time.time() - start_time)
-        FRONTEND_ACTIVE_REQUESTS.dec()
 
 
 # ============================================================================
@@ -136,6 +123,26 @@ with gr.Blocks(css=custom_css) as demo:
         gr.Markdown("<h1>MOVIE RECOMMENDATION CHATBOT</h1>")
     
     gr.Markdown("_Movie Recommendation Chatbot_")
+
+    # ===================== MODEL TOGGLE SECTION =====================
+    # User needs to switch between API and Local model from the UI
+    with gr.Accordion("Model Selection", open=True, elem_classes=["model-toggle"]):
+        model_toggle = gr.Radio(
+            choices=["API Model", "Local Model"],
+            value="API Model",
+            label="Choose which model to use for recommendations",
+            info="API Model = API model | Local Model = qwen model"
+        )
+        model_status = gr.Markdown("✅ Currently using: **API Model**")
+
+    #Updates the status text so user knows which model is active
+    def update_model_status(choice):
+        if choice == "Local Model":
+            return "✅ Currently using: **Local Model** — first request may be slow while model loads"
+        return "✅ Currently using: **API Model**"
+
+    model_toggle.change(fn=update_model_status, inputs=model_toggle, outputs=model_status)
+    # =====================================================================
 
     with gr.Accordion("Preference Settings", open=True):
         gr.Markdown("*Set your movie preferences to get personalized recommendations*")
@@ -196,6 +203,7 @@ with gr.Blocks(css=custom_css) as demo:
         e_state,
         v_state,
         p_state,
+        model_toggle,    #added toggle so its value is passed to respond()
     ]
 
     gr.ChatInterface(
