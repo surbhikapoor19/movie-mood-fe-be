@@ -46,6 +46,19 @@ services:
       - movie_net
     restart: unless-stopped
 
+  ngrok:
+    image: ngrok/ngrok:latest
+    depends_on:
+    - frontend
+    command:
+    - "http"
+    - "http://frontend:${FRONTEND_PORT}"
+    networks:
+    - movie_net
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+    restart: unless-stopped
+
   prometheus:
     image: prom/prometheus:latest
     volumes:
@@ -78,19 +91,6 @@ services:
     restart: unless-stopped
     depends_on:
       - prometheus
-
-  ngrok:
-    image: ngrok/ngrok:latest
-    depends_on:
-    - frontend
-    command:
-    - "http"
-    - "http://frontend:${FRONTEND_PORT}"
-    networks:
-    - movie_net
-    environment:
-      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
-    restart: unless-stopped
 
 networks:
   movie_net:

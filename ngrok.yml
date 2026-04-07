@@ -1,0 +1,13 @@
+# Use version 3 for the latest features
+version: "3"
+agent:
+  authtoken: ${} # Get this from the ngrok dashboard
+endpoints:
+  - name: service-one
+    url: https://your-app-1.ngrok-free.app # Optional: specify a custom URL
+    upstream:
+      url: http://app1:8080 # Service name and internal port from docker-compose
+  - name: service-two
+    url: https://your-app-2.ngrok-free.app
+    upstream:
+      url: http://app2:3000
