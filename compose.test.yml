@@ -1,0 +1,105 @@
+services:
+  # Lightweight mock backend that just exposes prometheus metrics
+  backend:
+    image: python:3.11-slim
+    working_dir: /app
+    volumes:
+      - ./backend/src:/app/src
+    command: >
+      bash -c "pip install prometheus_client fastapi uvicorn requests &&
+               python -c \"
+from prometheus_client import Counter, Summary, Gauge, start_http_server
+import time, threading
+
+# Start metrics server
+start_http_server(8000)
+print('Metrics server running on :8000')
+
+# Simulate some metrics
+c = Counter('chat_requests_total', 'Total chat requests received')
+s = Counter('chat_requests_successful_total', 'Chat requests that succeeded')
+d = Summary('chat_request_duration_seconds', 'End-to-end time per request')
+g = Gauge('active_requests', 'Currently processing requests')
+tmdb = Counter('tmdb_lookups_total', 'Total TMDB lookups')
+llm = Summary('llm_inference_duration_seconds', 'LLM inference time')
+
+# Generate fake traffic so Grafana has something to show
+while True:
+    c.inc()
+    s.inc()
+    d.observe(1.5)
+    tmdb.inc()
+    llm.observe(0.8)
+    g.set(2)
+    time.sleep(5)
+\""
+    ports:
+      - 22062:8000
+    networks:
+      - movie_net
+
+  # Lightweight mock frontend that just exposes prometheus metrics
+  frontend:
+    image: python:3.11-slim
+    working_dir: /app
+    volumes:
+      - ./frontend/src:/app/src
+    command: >
+      bash -c "pip install prometheus_client &&
+               python -c \"
+from prometheus_client import Counter, Summary, Gauge, start_http_server
+import time
+
+start_http_server(8001)
+print('Frontend metrics server running on :8001')
+
+c = Counter('frontend_page_loads_total', 'Total page loads')
+s = Counter('frontend_requests_successful_total', 'Successful requests')
+f = Counter('frontend_requests_failed_total', 'Failed requests')
+d = Summary('frontend_request_duration_seconds', 'Round-trip time')
+g = Gauge('frontend_active_requests', 'In-flight requests')
+
+while True:
+    c.inc()
+    s.inc()
+    d.observe(2.0)
+    g.set(1)
+    time.sleep(5)
+\""
+    ports:
+      - 22063:8001
+    networks:
+      - movie_net
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus/prometheus.test.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - 22066:9090
+    networks:
+      - movie_net
+    depends_on:
+      - backend
+      - frontend
+
+  grafana:
+    image: grafana/grafana:latest
+    volumes:
+      - ./grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+      - ./grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml
+      - ./grafana/movie-dashboard.json:/var/lib/grafana/dashboards/movie-dashboard.json
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - 22067:3000
+    networks:
+      - movie_net
+    depends_on:
+      - prometheus
+
+networks:
+  movie_net:
+    driver: bridge

@@ -8,6 +8,10 @@ RUN pip install --upgrade pip
 # Use --no-cache-dir to avoid storing pip's download cache.
 RUN pip install --no-cache-dir requests fastapi pydantic uvicorn dotenv
 RUN pip install --no-cache-dir transformers torch
+RUN pip install --no-cache-dir prometheus_client
+
+# Install prometheus-node-exporter for container-level system metrics
+RUN apt-get update && apt-get install -y prometheus-node-exporter && rm -rf /var/lib/apt/lists/*
 
 # Set the working directory inside our container
 WORKDIR /app
@@ -20,7 +24,9 @@ ARG PORT=6060
 ENV PORT=$PORT
 
 # Document that app listens on given port
-EXPOSE $PORT
+# App port + metrics port (8000) + node exporter (9100)
+EXPOSE $PORT 8000 9100
 
-# Start FastAPI app with Uvicorn
-CMD uvicorn src.app:app --host 0.0.0.0 --port $PORT
+# Start node exporter in background, then start FastAPI app
+CMD prometheus-node-exporter --web.listen-address=":9100" & \
+    uvicorn src.app:app --host 0.0.0.0 --port $PORT
