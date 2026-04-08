@@ -1,37 +1,23 @@
 global:
   scrape_interval: 15s
-  evaluation_interval: 15s
 
 scrape_configs:
-  # Backend Python app metrics (prometheus_client)
-  - job_name: 'backend_app'
+  - job_name: 'backend'
+    metrics_path: /metrics
     static_configs:
       - targets: ['backend:8000']
-        labels:
-          service: 'movie-backend'
 
-  # Frontend Python app metrics (prometheus_client)
-  - job_name: 'frontend_app'
+  - job_name: 'frontend'
+    metrics_path: /metrics
     static_configs:
       - targets: ['frontend:8001']
-        labels:
-          service: 'movie-frontend'
 
-  # Node exporter for backend container (system metrics)
-  - job_name: 'node_exporter_backend'
+  - job_name: 'cadvisor'
+    metrics_path: /metrics
     static_configs:
-      - targets: ['backend:9100']
-        labels:
-          service: 'movie-backend'
+      - targets: ['cadvisor:8080']
 
-  # Node exporter for frontend container (system metrics)
-  - job_name: 'node_exporter_frontend'
+  - job_name: 'node-exporter'
+    metrics_path: /metrics
     static_configs:
-      - targets: ['frontend:9100']
-        labels:
-          service: 'movie-frontend'
-
-  # Prometheus self-monitoring
-  - job_name: 'prometheus'
-    static_configs:
-      - targets: ['localhost:9090']
+      - targets: ['node-exporter:9100']

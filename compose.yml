@@ -21,7 +21,6 @@ services:
     ports:
       - 22060:${BACKEND_PORT}
       - 22062:8000   # Prometheus Python metrics
-      - 22064:9100   # Node exporter
     networks:
       - movie_net
     restart: unless-stopped
@@ -41,15 +40,45 @@ services:
     ports:
       - 22061:${FRONTEND_PORT}
       - 22063:8001   # Prometheus Python metrics
-      - 22065:9100   # Node exporter
+    networks:
+      - movie_net
+    restart: unless-stopped
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk:/dev/disk:ro
+    networks:
+      - movie_net
+    restart: unless-stopped
+
+  node-exporter:
+    image: quay.io/prometheus/node-exporter:latest
+    container_name: node_exporter
+    command:
+      - --path.rootfs=/host
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+    volumes:
+      - /:/host:ro
+    pid: host
     networks:
       - movie_net
     restart: unless-stopped
 
   prometheus:
     image: prom/prometheus:latest
+    container_name: prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
     volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
     ports:
       - 22066:9090
@@ -59,9 +88,12 @@ services:
     depends_on:
       - backend
       - frontend
+      - cadvisor
+      - node-exporter
 
   grafana:
     image: grafana/grafana:latest
+    container_name: grafana
     volumes:
       - grafana_data:/var/lib/grafana
       - ./grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
@@ -112,4 +144,6 @@ networks:
 
 volumes:
   prometheus_data:
+    driver: local
   grafana_data:
+    driver: local

@@ -9,9 +9,11 @@
     {
       "title": "Chat Requests per Second",
       "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
       "targets": [
         {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "rate(chat_requests_total[1m])",
           "legendFormat": "requests/s",
           "refId": "A"
@@ -25,14 +27,17 @@
     {
       "title": "Request Success vs Failure",
       "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
       "targets": [
         {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "rate(chat_requests_successful_total[1m])",
           "legendFormat": "successful",
           "refId": "A"
         },
         {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "rate(chat_requests_failed_total[1m])",
           "legendFormat": "failed",
           "refId": "B"
@@ -42,14 +47,17 @@
     {
       "title": "Chat Request Duration (p50 / p90)",
       "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "targets": [
         {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "chat_request_duration_seconds{quantile=\"0.5\"}",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "chat_request_duration_seconds{quantile=\"0.9\"}",
           "legendFormat": "p90",
           "refId": "B"
@@ -63,14 +71,17 @@
     {
       "title": "LLM Inference Duration (p50 / p90)",
       "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "targets": [
         {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "llm_inference_duration_seconds{quantile=\"0.5\"}",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "llm_inference_duration_seconds{quantile=\"0.9\"}",
           "legendFormat": "p90",
           "refId": "B"
@@ -84,9 +95,11 @@
     {
       "title": "Active Requests",
       "type": "gauge",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 6, "x": 0, "y": 16 },
       "targets": [
         {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "active_requests",
           "legendFormat": "active",
           "refId": "A"
@@ -96,14 +109,17 @@
     {
       "title": "TMDB API Calls",
       "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 6, "x": 6, "y": 16 },
       "targets": [
         {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "rate(tmdb_lookups_total[1m])",
           "legendFormat": "lookups/s",
           "refId": "A"
         },
         {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "rate(tmdb_lookups_failed_total[1m])",
           "legendFormat": "failures/s",
           "refId": "B"
@@ -113,9 +129,11 @@
     {
       "title": "Frontend Page Loads",
       "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 6, "x": 12, "y": 16 },
       "targets": [
         {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "rate(frontend_page_loads_total[1m])",
           "legendFormat": "loads/s",
           "refId": "A"
@@ -125,9 +143,11 @@
     {
       "title": "Container CPU Usage",
       "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 6, "x": 18, "y": 16 },
       "targets": [
         {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "rate(node_cpu_seconds_total{mode!=\"idle\"}[1m])",
           "legendFormat": "{{service}} - {{mode}}",
           "refId": "A"
@@ -141,9 +161,11 @@
     {
       "title": "Container Memory Usage",
       "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
       "targets": [
         {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes",
           "legendFormat": "{{service}} used",
           "refId": "A"
@@ -157,14 +179,17 @@
     {
       "title": "Container Disk I/O",
       "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
       "targets": [
         {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "rate(node_disk_read_bytes_total[1m])",
           "legendFormat": "read",
           "refId": "A"
         },
         {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "rate(node_disk_written_bytes_total[1m])",
           "legendFormat": "write",
           "refId": "B"
