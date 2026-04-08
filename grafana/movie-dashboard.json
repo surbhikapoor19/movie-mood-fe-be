@@ -45,22 +45,16 @@
       ]
     },
     {
-      "title": "Chat Request Duration (p50 / p90)",
+      "title": "Chat Request Duration (avg)",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "chat_request_duration_seconds{quantile=\"0.5\"}",
-          "legendFormat": "p50",
+          "expr": "rate(chat_request_duration_seconds_sum[5m]) / rate(chat_request_duration_seconds_count[5m])",
+          "legendFormat": "avg duration",
           "refId": "A"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "chat_request_duration_seconds{quantile=\"0.9\"}",
-          "legendFormat": "p90",
-          "refId": "B"
         }
       ],
       "fieldConfig": {
@@ -69,22 +63,16 @@
       }
     },
     {
-      "title": "LLM Inference Duration (p50 / p90)",
+      "title": "LLM Inference Duration (avg)",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "llm_inference_duration_seconds{quantile=\"0.5\"}",
-          "legendFormat": "p50",
+          "expr": "rate(llm_inference_duration_seconds_sum[5m]) / rate(llm_inference_duration_seconds_count[5m])",
+          "legendFormat": "avg inference",
           "refId": "A"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "llm_inference_duration_seconds{quantile=\"0.9\"}",
-          "legendFormat": "p90",
-          "refId": "B"
         }
       ],
       "fieldConfig": {
