@@ -79,18 +79,32 @@ services:
     depends_on:
       - prometheus
 
-  ngrok:
+  ngrok_frontend:
     image: ngrok/ngrok:latest
     depends_on:
     - frontend
-    command:
-    - "http"
-    - "http://frontend:${FRONTEND_PORT}"
+    command: 
+    - http
+    - frontend:${FRONTEND_PORT}
     networks:
     - movie_net
     environment:
-      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+      NGROK_AUTHTOKEN: ${NGROK_FRONTEND_AUTHTOKEN}
     restart: unless-stopped
+
+  ngrok_grafana:
+    image: ngrok/ngrok:latest
+    depends_on:
+    - grafana
+    command:
+    - http
+    - grafana:3000
+    networks:
+    - movie_net
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_GRAFANA_AUTHTOKEN}
+    restart: unless-stopped
+
 
 networks:
   movie_net:
