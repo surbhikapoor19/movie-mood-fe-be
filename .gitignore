@@ -4,9 +4,11 @@ __pycache__/
 venv/
 backEnd/
 frontEnd/
+Test/
 
 # Environment / secrets
-.env
+.env.local
+.devcontainer
 
 # Logs
 recover.log

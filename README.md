@@ -1,17 +1,3 @@
----
-title: Movie Rec Stage
-emoji: 💬
-colorFrom: yellow
-colorTo: purple
-sdk: gradio
-sdk_version: 6.5.1
-app_file: app.py
-pinned: false
-hf_oauth: true
-hf_oauth_scopes:
-- inference-api
----
-
 # Movie Reccomendation Chatbot
 
 This is our Movie Reccomendation Chatbot that we are creating for CS553, better known as Machine Learning Development and Operations. Our goal is to create a chatbot which will take in user preferances and reccomend the user a movie to watch.
