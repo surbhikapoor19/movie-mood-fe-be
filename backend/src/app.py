@@ -6,12 +6,30 @@ FastAPI routes that expose the existing functions as HTTP endpoints.
 import json
 import re
 import os
+import time
 import requests
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
+from prometheus_client import Counter, Summary, Gauge, start_http_server
+
+# ============================================================================
+# PROMETHEUS METRICS
+# ============================================================================
+REQUEST_COUNT = Counter('chat_requests_total', 'Total chat requests received')
+SUCCESSFUL_REQUESTS = Counter('chat_requests_successful_total', 'Chat requests that succeeded')
+FAILED_REQUESTS = Counter('chat_requests_failed_total', 'Chat requests that failed')
+REQUEST_DURATION = Summary('chat_request_duration_seconds', 'End-to-end time per chat request')
+LLM_INFERENCE_DURATION = Summary('llm_inference_duration_seconds', 'Time spent in LLM inference')
+TMDB_LOOKUPS = Counter('tmdb_lookups_total', 'Total TMDB API lookups')
+TMDB_FAILURES = Counter('tmdb_lookups_failed_total', 'Failed TMDB API lookups')
+ACTIVE_REQUESTS = Gauge('active_requests', 'Number of chat requests currently being processed')
+STRUCTURED_MODE_COUNT = Counter('structured_mode_total', 'Requests handled in structured recommendation mode')
+CONVERSATIONAL_MODE_COUNT = Counter('conversational_mode_total', 'Requests handled in conversational mode')
+
+start_http_server(8000)
 
 # Always imported at the top level so it is available whether the server
 # started in local mode or API mode. Previously this was inside a conditional
@@ -63,6 +81,7 @@ def search_movie_tmdb(title: str, year: int = None) -> dict | None:
         params["year"] = year
 
     try:
+        TMDB_LOOKUPS.inc()
         print(f"[INFO] TMDB: Searching for '{title}' ({year or 'any year'})...")
         response = requests.get(f"{TMDB_BASE_URL}/search/movie", params=params, timeout=10)
         response.raise_for_status()
@@ -74,6 +93,7 @@ def search_movie_tmdb(title: str, year: int = None) -> dict | None:
         print(f"[INFO] TMDB: No results found for '{title}'")
         return None
     except requests.RequestException as e:
+        TMDB_FAILURES.inc()
         print(f"[WARN] TMDB: Request failed for '{title}': {e}")
         return None
 
@@ -407,6 +427,7 @@ def run_local_model(messages: list[dict], max_tokens: int, temperature: float) -
         # switched the UI toggle to "Local Model" mid-session.
         pipe = get_local_pipeline()
 
+        start_time = time.time()
         result = pipe(
             messages,
             max_new_tokens=effective_max_tokens,
@@ -414,6 +435,7 @@ def run_local_model(messages: list[dict], max_tokens: int, temperature: float) -
             temperature=max(temperature, 0.01),
             pad_token_id=pipe.tokenizer.eos_token_id,
         )
+        LLM_INFERENCE_DURATION.observe(time.time() - start_time)
         raw_content = result[0]["generated_text"][-1]["content"]
         print(f"[INFO] Local model response: {len(raw_content)} characters")
         return raw_content
@@ -429,9 +451,11 @@ def run_api_model(messages: list[dict], max_tokens: int, temperature: float, top
     print(f"[INFO] API model inference — model={API_MODEL_NAME}, max_tokens={max_tokens}")
     client   = InferenceClient(model=API_MODEL_NAME)
     response = ""
+    start_time = time.time()
     for chunk in client.chat_completion(messages, max_tokens=max_tokens, stream=True, temperature=temperature, top_p=top_p):
         if chunk.choices and chunk.choices[0].delta.content:
             response += chunk.choices[0].delta.content
+    LLM_INFERENCE_DURATION.observe(time.time() - start_time)
     print(f"[INFO] API response: {len(response)} characters")
     return response
 
@@ -551,51 +575,65 @@ def health():
 
 @app.post("/chat")
 def chat_endpoint(req: ChatRequest):
-    # ── Resolve which model to use for THIS request ──────────────────────────
-    # Priority: UI toggle (req.use_local_model) > env var (LOCAL_MODEL)
-    # If the frontend didn't send the field (None), fall back to the env default.
-    if req.use_local_model is not None:
-        use_local = req.use_local_model
-        print(f"[INFO] Model selected by UI toggle: {'LOCAL' if use_local else 'API'}")
-    else:
-        use_local = LOCAL_MODEL
-        print(f"[INFO] Model from env var default: {'LOCAL' if use_local else 'API'}")
-    # ─────────────────────────────────────────────────────────────────────────
+    REQUEST_COUNT.inc()
+    ACTIVE_REQUESTS.inc()
+    req_start = time.time()
 
-    message      = req.message
-    genre        = req.genre
-    mood         = req.mood
-    era          = req.era
-    viewing_pref = req.viewing_pref
-    pace         = req.pace
-
-    print(f"\n{'='*60}")
-    print(f"[INFO] New request — mode: {'LOCAL' if use_local else 'API'}")
-    print(f"[INFO] Message: {message[:100]}{'...' if len(message) > 100 else ''}")
-    print(f"[INFO] Prefs — Genre:{genre} Mood:{mood} Era:{era} Viewing:{viewing_pref} Pace:{pace}")
-
-    user_answers, is_recommendation_request, all_preferences_set = prepare_request(
-        message, genre, mood, era, viewing_pref, pace
-    )
-
-    if is_recommendation_request and all_preferences_set:
-        print("[INFO] Mode: STRUCTURED recommendation")
-        messages = build_messages(user_answers)
-        if use_local:
-            response = run_local_model(messages, req.max_tokens, req.temperature)
+    try:
+        # ── Resolve which model to use for THIS request ──────────────────────
+        if req.use_local_model is not None:
+            use_local = req.use_local_model
+            print(f"[INFO] Model selected by UI toggle: {'LOCAL' if use_local else 'API'}")
         else:
-            response = run_api_model(messages, req.max_tokens, req.temperature, req.top_p)
-        result = process_structured_response(response, message)
-    else:
-        print("[INFO] Mode: CONVERSATIONAL")
-        messages = [{"role": "system", "content": build_conversational_context(genre, mood, era, viewing_pref, pace)}]
-        messages.extend(req.history)
-        messages.append({"role": "user", "content": message})
-        if use_local:
-            response = run_local_model(messages, req.max_tokens, req.temperature)
-        else:
-            response = run_api_model(messages, req.max_tokens, req.temperature, req.top_p)
-        result = process_conversational_response(response)
+            use_local = LOCAL_MODEL
+            print(f"[INFO] Model from env var default: {'LOCAL' if use_local else 'API'}")
+        # ─────────────────────────────────────────────────────────────────────
 
-    print(f"[INFO] Request complete\n{'='*60}\n")
-    return {"response": result}
+        message      = req.message
+        genre        = req.genre
+        mood         = req.mood
+        era          = req.era
+        viewing_pref = req.viewing_pref
+        pace         = req.pace
+
+        print(f"\n{'='*60}")
+        print(f"[INFO] New request — mode: {'LOCAL' if use_local else 'API'}")
+        print(f"[INFO] Message: {message[:100]}{'...' if len(message) > 100 else ''}")
+        print(f"[INFO] Prefs — Genre:{genre} Mood:{mood} Era:{era} Viewing:{viewing_pref} Pace:{pace}")
+
+        user_answers, is_recommendation_request, all_preferences_set = prepare_request(
+            message, genre, mood, era, viewing_pref, pace
+        )
+
+        if is_recommendation_request and all_preferences_set:
+            STRUCTURED_MODE_COUNT.inc()
+            print("[INFO] Mode: STRUCTURED recommendation")
+            messages = build_messages(user_answers)
+            if use_local:
+                response = run_local_model(messages, req.max_tokens, req.temperature)
+            else:
+                response = run_api_model(messages, req.max_tokens, req.temperature, req.top_p)
+            result = process_structured_response(response, message)
+        else:
+            CONVERSATIONAL_MODE_COUNT.inc()
+            print("[INFO] Mode: CONVERSATIONAL")
+            messages = [{"role": "system", "content": build_conversational_context(genre, mood, era, viewing_pref, pace)}]
+            messages.extend(req.history)
+            messages.append({"role": "user", "content": message})
+            if use_local:
+                response = run_local_model(messages, req.max_tokens, req.temperature)
+            else:
+                response = run_api_model(messages, req.max_tokens, req.temperature, req.top_p)
+            result = process_conversational_response(response)
+
+        SUCCESSFUL_REQUESTS.inc()
+        print(f"[INFO] Request complete\n{'='*60}\n")
+        return {"response": result}
+
+    except Exception as e:
+        FAILED_REQUESTS.inc()
+        raise e
+
+    finally:
+        REQUEST_DURATION.observe(time.time() - req_start)
+        ACTIVE_REQUESTS.dec()
