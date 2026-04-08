@@ -1,45 +1,29 @@
 """
-backend.py  —  FastAPI backend, port 9010
+backend.py  —  FastAPI backend
 FastAPI routes that expose the existing functions as HTTP endpoints.
 """
 
 import json
 import re
 import os
-import time
 import requests
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
-from prometheus_client import Counter, Summary, Gauge, start_http_server
 
-# ============================================================================
-# PROMETHEUS METRICS
-# ============================================================================
-REQUEST_COUNT = Counter('chat_requests_total', 'Total chat requests received')
-SUCCESSFUL_REQUESTS = Counter('chat_requests_successful_total', 'Chat requests that succeeded')
-FAILED_REQUESTS = Counter('chat_requests_failed_total', 'Chat requests that failed')
-REQUEST_DURATION = Summary('chat_request_duration_seconds', 'End-to-end time per chat request')
-LLM_INFERENCE_DURATION = Summary('llm_inference_duration_seconds', 'Time spent in LLM inference')
-TMDB_LOOKUPS = Counter('tmdb_lookups_total', 'Total TMDB API lookups')
-TMDB_FAILURES = Counter('tmdb_lookups_failed_total', 'Failed TMDB API lookups')
-ACTIVE_REQUESTS = Gauge('active_requests', 'Number of chat requests currently being processed')
-STRUCTURED_MODE_COUNT = Counter('structured_mode_total', 'Requests handled in structured recommendation mode')
-CONVERSATIONAL_MODE_COUNT = Counter('conversational_mode_total', 'Requests handled in conversational mode')
+# Always imported at the top level so it is available whether the server
+# started in local mode or API mode. Previously this was inside a conditional
+# block, which caused a NameError when a request fell back from local to API.
+from huggingface_hub import InferenceClient
 
-# Start Prometheus metrics HTTP server on port 8000
-start_http_server(8000)
-
-# Load environment variables from .env file for local development
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
     pass
 
-# Load HF token from Docker secret if available
 try:
     with open("/run/secrets/hf_token") as f:
         os.environ["HF_TOKEN"] = f.read().strip()
@@ -49,78 +33,60 @@ except FileNotFoundError:
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-# Set to True to use local model (transformers pipeline), False for HF Inference API
+# Controls whether the local model pipeline is pre-loaded at startup.
+# Even when False, the pipeline can still be lazy-loaded later if the
+# UI toggle selects "Local Model".
 LOCAL_MODEL = os.environ.get("LOCAL_MODEL", "false").lower() == "true"
 
-# Local model configuration
-LOCAL_MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"  # Smaller model for local use (~1GB)
-# Alternative larger models:
-# LOCAL_MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"  # ~3GB
-# LOCAL_MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.3"  # ~14GB
-
-# API model configuration
-API_MODEL_NAME = "openai/gpt-oss-120b"
+LOCAL_MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
+API_MODEL_NAME   = "openai/gpt-oss-120b"
 
 # ============================================================================
 # TMDB API CONFIGURATION
 # ============================================================================
-TMDB_BASE_URL = "https://api.themoviedb.org/3"
+TMDB_BASE_URL       = "https://api.themoviedb.org/3"
 TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w300"
 
 
 def get_tmdb_api_key():
-    """Get TMDB API key from environment variable."""
     return os.environ.get("TMDB_API_KEY", "")
 
 
 def search_movie_tmdb(title: str, year: int = None) -> dict | None:
-    """Search for a movie on TMDB by title and optionally year."""
     api_key = get_tmdb_api_key()
     if not api_key:
         print(f"[INFO] TMDB: No API key configured, skipping lookup for '{title}'")
         return None
-    
-    params = {
-        "api_key": api_key,
-        "query": title,
-        "include_adult": False,
-    }
+
+    params = {"api_key": api_key, "query": title, "include_adult": False}
     if year:
         params["year"] = year
-    
+
     try:
-        TMDB_LOOKUPS.inc()
         print(f"[INFO] TMDB: Searching for '{title}' ({year or 'any year'})...")
         response = requests.get(f"{TMDB_BASE_URL}/search/movie", params=params, timeout=10)
         response.raise_for_status()
-        data = response.json()
-        results = data.get("results", [])
-        print(f"[DEBUG] TMDB: Search results: {results}")
-
+        results = response.json().get("results", [])
         if results:
-            # Return the first (most relevant) result
             found = results[0]
             print(f"[INFO] TMDB: Found '{found.get('title')}' (rating: {found.get('vote_average', 'N/A')})")
             return found
         print(f"[INFO] TMDB: No results found for '{title}'")
         return None
     except requests.RequestException as e:
-        TMDB_FAILURES.inc()
         print(f"[WARN] TMDB: Request failed for '{title}': {e}")
         return None
 
 
 def get_movie_details_tmdb(movie_id: int) -> dict | None:
-    """Get detailed movie information from TMDB."""
     api_key = get_tmdb_api_key()
     if not api_key:
         return None
-    
     try:
         response = requests.get(
             f"{TMDB_BASE_URL}/movie/{movie_id}",
             params={"api_key": api_key},
-            timeout=10
+            timeout=10,
         )
         response.raise_for_status()
         return response.json()
@@ -129,60 +95,46 @@ def get_movie_details_tmdb(movie_id: int) -> dict | None:
 
 
 def format_movie_card_with_tmdb(title: str, year: int, why: str, index: int) -> str:
-    """Format a movie card, enriching with TMDB data if available."""
-    # Try to get TMDB data
     tmdb_data = search_movie_tmdb(title, year)
-    
+
     if tmdb_data:
-        # Extract TMDB info
-        tmdb_title = tmdb_data.get("title", title)
-        tmdb_year = tmdb_data.get("release_date", "")[:4] if tmdb_data.get("release_date") else str(year)
-        rating = tmdb_data.get("vote_average", 0)
-        overview = tmdb_data.get("overview", "")
+        tmdb_title  = tmdb_data.get("title", title)
+        tmdb_year   = tmdb_data.get("release_date", "")[:4] if tmdb_data.get("release_date") else str(year)
+        rating      = tmdb_data.get("vote_average", 0)
+        overview    = tmdb_data.get("overview", "")
         poster_path = tmdb_data.get("poster_path")
-        
-        # Truncate overview if too long
+
         if len(overview) > 200:
             overview = overview[:200] + "..."
-        
-        # Build poster HTML
+
         if poster_path:
-            poster_html = f'<img src="{TMDB_IMAGE_BASE_URL}{poster_path}" alt="{tmdb_title}" style="max-width: 150px; border-radius: 8px; margin-right: 15px;">'
+            poster_html = f'<img src="{TMDB_IMAGE_BASE_URL}{poster_path}" alt="{tmdb_title}" style="max-width:150px;border-radius:8px;margin-right:15px;">'
         else:
-            # Placeholder for missing poster
-            poster_html = '''<div style="width: 150px; min-width: 150px; height: 225px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 8px; margin-right: 15px; display: flex; align-items: center; justify-content: center; color: white; font-size: 48px;">🎬</div>'''
-        
-        # Format the card with poster
-        card = f"""
-                <div style="display: flex; margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-                    {poster_html}
-                    <div style="flex: 1;">
-                        <h3 style="margin: 0 0 5px 0; color: #333;">{index}. {tmdb_title} ({tmdb_year})</h3>
-                        <p style="margin: 5px 0;"><strong>Rating:</strong> {rating:.1f}/10</p>
-                        <p style="margin: 5px 0;"><em>{why}</em></p>
-                        <p style="margin: 5px 0; color: #666; font-size: 0.9em;">{overview}</p>
-                    </div>
-                </div>
-                """ 
-        return card
-    else:
-        # Fallback without TMDB data - styled similarly to TMDB card
-        # Placeholder image area
-        placeholder_html = '''<div style="width: 150px; min-width: 150px; height: 225px; background: linear-gradient(135deg, #a8a8a8 0%, #6b6b6b 100%); border-radius: 8px; margin-right: 15px; display: flex; align-items: center; justify-content: center; color: white; font-size: 48px;">🎬</div>'''
-        
-        # Show year if available
-        year_display = f" ({year})" if year else ""
-        
+            poster_html = '<div style="width:150px;min-width:150px;height:225px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);border-radius:8px;margin-right:15px;display:flex;align-items:center;justify-content:center;color:white;font-size:48px;">🎬</div>'
+
         return f"""
-                <div style="display: flex; margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-                {placeholder_html}
-                    <div style="flex: 1;">
-                        <h3 style="margin: 0 0 5px 0; color: #333;">{index}. {title}{year_display}</h3>
-                        <p style="margin: 5px 0; color: #888;"><em>Movie details not available from TMDB</em></p>
-                        <p style="margin: 5px 0;"><em>{why}</em></p>
-                    </div>
-                </div>
-                """
+        <div style="display:flex;margin-bottom:20px;padding:15px;background:#f8f9fa;border-radius:10px;box-shadow:0 2px 4px rgba(0,0,0,0.1);">
+            {poster_html}
+            <div style="flex:1;">
+                <h3 style="margin:0 0 5px 0;color:#333;">{index}. {tmdb_title} ({tmdb_year})</h3>
+                <p style="margin:5px 0;"><strong>Rating:</strong> {rating:.1f}/10</p>
+                <p style="margin:5px 0;"><em>{why}</em></p>
+                <p style="margin:5px 0;color:#666;font-size:0.9em;">{overview}</p>
+            </div>
+        </div>"""
+    else:
+        placeholder_html = '<div style="width:150px;min-width:150px;height:225px;background:linear-gradient(135deg,#a8a8a8 0%,#6b6b6b 100%);border-radius:8px;margin-right:15px;display:flex;align-items:center;justify-content:center;color:white;font-size:48px;">🎬</div>'
+        year_display = f" ({year})" if year else ""
+        return f"""
+        <div style="display:flex;margin-bottom:20px;padding:15px;background:#f8f9fa;border-radius:10px;box-shadow:0 2px 4px rgba(0,0,0,0.1);">
+            {placeholder_html}
+            <div style="flex:1;">
+                <h3 style="margin:0 0 5px 0;color:#333;">{index}. {title}{year_display}</h3>
+                <p style="margin:5px 0;color:#888;"><em>Movie details not available from TMDB</em></p>
+                <p style="margin:5px 0;"><em>{why}</em></p>
+            </div>
+        </div>"""
+
 
 # ============================================================================
 # MODEL INITIALIZATION
@@ -190,31 +142,54 @@ def format_movie_card_with_tmdb(title: str, year: int, why: str, index: int) -> 
 local_pipeline = None
 
 if LOCAL_MODEL:
-    print(f"[MODE] Loading local model: {LOCAL_MODEL_NAME}")
+    print(f"[MODE] Pre-loading local model at startup: {LOCAL_MODEL_NAME}")
     try:
         from transformers import pipeline
         import torch
-        
-        # Force CPU to avoid Metal/MPS memory issues on Mac
+
         local_pipeline = pipeline(
             "text-generation",
             model=LOCAL_MODEL_NAME,
-            device="cpu",  # Use CPU to avoid GPU memory issues
+            device="cpu",
             torch_dtype=torch.float32,
         )
-        print(f"[MODE] Local model loaded successfully on CPU!")
+        print("[MODE] Local model loaded successfully on CPU!")
     except Exception as e:
         print(f"[ERROR] Failed to load local model: {e}")
         print("[MODE] Falling back to API mode")
         LOCAL_MODEL = False
-        from huggingface_hub import InferenceClient
 
 if not LOCAL_MODEL:
-    print("[MODE] Using HuggingFace Inference API")
-    from huggingface_hub import InferenceClient
+    print("[MODE] Server default: HuggingFace Inference API")
+
 
 # ============================================================================
-# PROMPT ENGINEERING (from notebook)
+# LAZY LOADER
+# Called by run_local_model() the first time a request needs the local model.
+# Handles the case where the server started in API mode (LOCAL_MODEL=false)
+# but the user later switches the UI toggle to "Local Model".
+# After the first load the pipeline is cached in local_pipeline and
+# subsequent calls return immediately.
+# ============================================================================
+def get_local_pipeline():
+    global local_pipeline
+    if local_pipeline is None:
+        print(f"[MODE] Lazy-loading local model on first request: {LOCAL_MODEL_NAME}")
+        from transformers import pipeline
+        import torch
+
+        local_pipeline = pipeline(
+            "text-generation",
+            model=LOCAL_MODEL_NAME,
+            device="cpu",
+            torch_dtype=torch.float32,
+        )
+        print("[MODE] Local model lazy-loaded successfully!")
+    return local_pipeline
+
+
+# ============================================================================
+# PROMPT ENGINEERING
 # ============================================================================
 SYSTEM_PROMPT = """You are a movie recommender. Recommend 3-5 movies matching the user's preferences.
 
@@ -244,10 +219,10 @@ FEW_SHOT_EXAMPLES = [
         "assistant": {
             "user_mentioned_movies": ["Skinamarink"],
             "recommendations": [
-                {"title": "A Quiet Place", "year": 2018, "why": "Tense survival horror with clever premise and minimal gore."},
-                {"title": "Get Out", "year": 2017, "why": "Psychological thriller with sharp twists and social commentary."},
-                {"title": "It Follows", "year": 2014, "why": "Atmospheric horror with unique concept and building dread."},
-                {"title": "Don't Breathe", "year": 2016, "why": "Intense home invasion thriller with constant suspense."}
+                {"title": "A Quiet Place",  "year": 2018, "why": "Tense survival horror with clever premise and minimal gore."},
+                {"title": "Get Out",         "year": 2017, "why": "Psychological thriller with sharp twists and social commentary."},
+                {"title": "It Follows",      "year": 2014, "why": "Atmospheric horror with unique concept and building dread."},
+                {"title": "Don't Breathe",   "year": 2016, "why": "Intense home invasion thriller with constant suspense."},
             ]
         }
     },
@@ -263,10 +238,10 @@ FEW_SHOT_EXAMPLES = [
         "assistant": {
             "user_mentioned_movies": ["Shawshank Redemption"],
             "recommendations": [
-                {"title": "Good Will Hunting", "year": 1997, "why": "Character-driven drama with emotional growth and warmth."},
-                {"title": "Forrest Gump", "year": 1994, "why": "Heartfelt journey through life with bittersweet moments."},
-                {"title": "The Green Mile", "year": 1999, "why": "Emotional prison drama with powerful character arcs."},
-                {"title": "Dead Poets Society", "year": 1989, "why": "Inspiring story about finding your voice and passion."}
+                {"title": "Good Will Hunting",   "year": 1997, "why": "Character-driven drama with emotional growth and warmth."},
+                {"title": "Forrest Gump",         "year": 1994, "why": "Heartfelt journey through life with bittersweet moments."},
+                {"title": "The Green Mile",       "year": 1999, "why": "Emotional prison drama with powerful character arcs."},
+                {"title": "Dead Poets Society",   "year": 1989, "why": "Inspiring story about finding your voice and passion."},
             ]
         }
     },
@@ -282,13 +257,13 @@ FEW_SHOT_EXAMPLES = [
         "assistant": {
             "user_mentioned_movies": ["Spider-Man: Into the Spider-Verse"],
             "recommendations": [
-                {"title": "The Lego Movie", "year": 2014, "why": "Colorful animated adventure with humor and heart."},
-                {"title": "Big Hero 6", "year": 2014, "why": "Stylish superhero animation with emotional depth."},
-                {"title": "Coco", "year": 2017, "why": "Visually stunning with heartfelt family themes."},
-                {"title": "The Mitchells vs. the Machines", "year": 2021, "why": "Fast-paced comedy with unique animation style."}
+                {"title": "The Lego Movie",                   "year": 2014, "why": "Colorful animated adventure with humor and heart."},
+                {"title": "Big Hero 6",                       "year": 2014, "why": "Stylish superhero animation with emotional depth."},
+                {"title": "Coco",                             "year": 2017, "why": "Visually stunning with heartfelt family themes."},
+                {"title": "The Mitchells vs. the Machines",   "year": 2021, "why": "Fast-paced comedy with unique animation style."},
             ]
         }
-    }
+    },
 ]
 
 USER_PROMPT_TEMPLATE = """Given the user's answers below, recommend 3-5 movies.
@@ -303,55 +278,27 @@ If the user mentions a movie, pick similar ones. Follow the rules from the syste
 # MODEL FUNCTIONS
 # ============================================================================
 def build_messages(user_answers: dict) -> list[dict]:
-    """Assemble system prompt, few-shot examples, and user query into a
-    chat-message list ready for the model."""
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-
     for ex in FEW_SHOT_EXAMPLES:
-        messages.append({
-            "role": "user",
-            "content": USER_PROMPT_TEMPLATE.format(
-                answers_json=json.dumps(ex["user"])
-            )
-        })
-        messages.append({
-            "role": "assistant",
-            "content": json.dumps(ex["assistant"])
-        })
-
-    messages.append({
-        "role": "user",
-        "content": USER_PROMPT_TEMPLATE.format(
-            answers_json=json.dumps(user_answers)
-        )
-    })
-
+        messages.append({"role": "user",      "content": USER_PROMPT_TEMPLATE.format(answers_json=json.dumps(ex["user"]))})
+        messages.append({"role": "assistant", "content": json.dumps(ex["assistant"])})
+    messages.append({"role": "user", "content": USER_PROMPT_TEMPLATE.format(answers_json=json.dumps(user_answers))})
     return messages
 
 
 def clean_output(raw_content: str) -> str:
-    """Extract the assistant's final response, stripping any <think> blocks."""
-    clean_out = re.sub(r"<think>.*?</think>\s*", "", raw_content, flags=re.DOTALL)
-    return clean_out.strip()
+    return re.sub(r"<think>.*?</think>\s*", "", raw_content, flags=re.DOTALL).strip()
 
 
 def parse_recommendation(response_text: str) -> dict:
-    """Parse the JSON response from the model, handling common malformed outputs."""
-    print(f"[INFO] Attempting to parse JSON from response...")
-    print(f"\n{'='*60}")
-    print(f"[DEBUG] FULL RAW MODEL OUTPUT:")
-    print(f"{'='*60}")
-    print(response_text)
-    print(f"{'='*60}\n")
-    
-    # First, try direct JSON parsing
+    print(f"\n{'='*60}\n[DEBUG] FULL RAW MODEL OUTPUT:\n{'='*60}\n{response_text}\n{'='*60}\n")
+
+    # Attempt 1: direct JSON parse
     try:
         start = response_text.find('{')
         if start == -1:
-            print(f"[WARN] No JSON object found in response")
+            print("[WARN] No JSON object found in response")
             return None
-        
-        # Count braces to find the matching closing brace
         depth = 0
         for i, char in enumerate(response_text[start:], start):
             if char == '{':
@@ -359,210 +306,116 @@ def parse_recommendation(response_text: str) -> dict:
             elif char == '}':
                 depth -= 1
                 if depth == 0:
-                    json_str = response_text[start:i+1]
-                    result = json.loads(json_str)
-                    print(f"[INFO] Successfully parsed JSON directly")
+                    result = json.loads(response_text[start:i+1])
+                    print("[INFO] Successfully parsed JSON directly")
                     return result
     except json.JSONDecodeError as e:
         print(f"[INFO] Direct JSON parsing failed: {e}")
-    
-    # Try to fix common malformed JSON issues
+
+    # Attempt 2: fix common malformed JSON
     try:
-        print(f"[INFO] Attempting to fix malformed JSON...")
-        
-        # Extract the JSON-like content
         start = response_text.find('{')
-        end = response_text.rfind('}') + 1
+        end   = response_text.rfind('}') + 1
         if start == -1 or end == 0:
             return None
-        
         json_str = response_text[start:end]
-        
-        # Fix: Multiple arrays instead of objects in array
-        # Pattern: [{"title":...}], [{"title":...}] -> {"title":...}, {"title":...}
-        json_str = re.sub(r'\],\s*\[', ', ', json_str)
-        
-        # Fix: Remove extra brackets around individual objects
-        # Pattern: [[{...}]] -> [{...}]
-        json_str = re.sub(r'\[\[(\{)', r'[\1', json_str)
-        json_str = re.sub(r'(\})\]\]', r'\1]', json_str)
-        
-        # Fix: Trailing commas before closing brackets
-        json_str = re.sub(r',\s*\]', ']', json_str)
-        json_str = re.sub(r',\s*\}', '}', json_str)
-        
-        # Fix: Missing commas between objects
-        json_str = re.sub(r'\}\s*\{', '}, {', json_str)
-        
-        # Fix: Unescaped quotes in strings (common issue)
-        # This is tricky - try to fix obvious cases
-        json_str = re.sub(r'(?<!\\)"(?=\w)', '\\"', json_str)
-        
-        # Fix: Single quotes to double quotes
+        json_str = re.sub(r'\],\s*\[',   ', ',   json_str)
+        json_str = re.sub(r'\[\[(\{)',    r'[\1',  json_str)
+        json_str = re.sub(r'(\})\]\]',   r'\1]',  json_str)
+        json_str = re.sub(r',\s*\]',     ']',     json_str)
+        json_str = re.sub(r',\s*\}',     '}',     json_str)
+        json_str = re.sub(r'\}\s*\{',    '}, {',  json_str)
         json_str = json_str.replace("'", '"')
-        
-        print(f"[DEBUG] Fixed JSON (first 500 chars): {json_str[:500]}...")
-        
-        # Try parsing the fixed JSON
         result = json.loads(json_str)
-        print(f"[INFO] Successfully parsed fixed JSON")
+        print("[INFO] Successfully parsed fixed JSON")
         return result
     except json.JSONDecodeError as e:
         print(f"[WARN] Fixed JSON parsing also failed: {e}")
-        print(f"[DEBUG] Error at position {e.pos}: ...{json_str[max(0,e.pos-20):e.pos+20]}...")
-    
-    # Last resort: try to extract movie titles using regex
+
+    # Attempt 3: regex extraction
     try:
-        print(f"[INFO] Attempting regex extraction of movie titles...")
-        
-        # Find all movie title patterns - handle both "title" and 'title'
-        title_pattern = r'["\']title["\']\s*:\s*["\']([^"\']+)["\']'
-        year_pattern = r'["\']year["\']\s*:\s*(\d{4})'
-        why_pattern = r'["\']why["\']\s*:\s*["\']([^"\']*)["\']'
-        
-        titles = re.findall(title_pattern, response_text)
-        years = re.findall(year_pattern, response_text)
-        whys = re.findall(why_pattern, response_text)
-        
-        print(f"[DEBUG] Regex found - titles: {titles}, years: {years}")
-        
+        titles = re.findall(r'["\']title["\']\s*:\s*["\']([^"\']+)["\']', response_text)
+        years  = re.findall(r'["\']year["\']\s*:\s*(\d{4})',              response_text)
+        whys   = re.findall(r'["\']why["\']\s*:\s*["\']([^"\']*)["\']',  response_text)
         if titles:
             recommendations = []
             for i, title in enumerate(titles):
-                rec = {"title": title}
-                if i < len(years):
-                    rec["year"] = int(years[i])
-                else:
-                    rec["year"] = ""
-                if i < len(whys) and whys[i]:
-                    rec["why"] = whys[i]
-                else:
-                    rec["why"] = "Recommended based on your preferences"
-                recommendations.append(rec)
-            
-            print(f"[INFO] Regex extraction found {len(recommendations)} movies: {[r['title'] for r in recommendations]}")
+                recommendations.append({
+                    "title": title,
+                    "year":  int(years[i]) if i < len(years) else "",
+                    "why":   whys[i] if i < len(whys) and whys[i] else "Recommended based on your preferences",
+                })
+            print(f"[INFO] Regex extraction found {len(recommendations)} movies")
             return {"recommendations": recommendations, "user_mentioned_movies": []}
     except Exception as e:
         print(f"[WARN] Regex extraction failed: {e}")
-    
-    print(f"[ERROR] All parsing attempts failed")
+
+    print("[ERROR] All parsing attempts failed")
     return None
 
 
 def filter_mentioned_movies(rec: dict, user_message: str) -> dict:
-    """Filter out any movies that the user mentioned from the recommendations."""
     if not rec:
         return rec
-    
-    recommendations = rec.get("recommendations", [])
-    mentioned = rec.get("user_mentioned_movies", [])
-    
-    # Also extract potential movie mentions from the user message
-    # Common patterns: "I like X", "I love X", "I watched X", "similar to X"
+    recommendations   = rec.get("recommendations", [])
+    mentioned_lower   = [m.lower() for m in rec.get("user_mentioned_movies", [])]
     user_message_lower = user_message.lower()
-    
-    # Add any movies from user_mentioned_movies to our filter list
-    mentioned_lower = [m.lower() for m in mentioned]
-    
-    # Filter out recommendations that match mentioned movies
-    filtered_recommendations = []
+    filtered = []
     for movie in recommendations:
-        title = movie.get("title", "")
-        title_lower = title.lower()
-        
-        # Check if this movie title appears in mentioned movies or user message
-        is_mentioned = False
-        
-        # Check against extracted mentioned movies
-        for mentioned_title in mentioned_lower:
-            if mentioned_title in title_lower or title_lower in mentioned_title:
-                is_mentioned = True
-                print(f"[INFO] Filtering out '{title}' - matches mentioned movie '{mentioned_title}'")
-                break
-        
-        # Also check if the title appears directly in user message
+        title_lower  = movie.get("title", "").lower()
+        is_mentioned = any(m in title_lower or title_lower in m for m in mentioned_lower)
         if not is_mentioned and title_lower in user_message_lower:
             is_mentioned = True
-            print(f"[INFO] Filtering out '{title}' - appears in user message")
-        
         if not is_mentioned:
-            filtered_recommendations.append(movie)
-    
-    if len(filtered_recommendations) < len(recommendations):
-        print(f"[INFO] Filtered {len(recommendations) - len(filtered_recommendations)} mentioned movies from recommendations")
-    
-    rec["recommendations"] = filtered_recommendations
+            filtered.append(movie)
+    rec["recommendations"] = filtered
     return rec
 
 
-def format_recommendation(rec: dict, user_message: str = ""):
-    """Format the recommendations as a nice response with TMDB posters and ratings.
-    
-    Returns gr.HTML for rich content (with TMDB) or plain string (without TMDB).
-    """
+def format_recommendation(rec: dict, user_message: str = "") -> str:
     if not rec:
         return "I couldn't generate proper recommendations. Please try again!"
-    
-    # Filter out any movies the user mentioned
     if user_message:
         rec = filter_mentioned_movies(rec, user_message)
-    
     recommendations = rec.get("recommendations", [])
-    
     if not recommendations:
         return "I couldn't generate proper recommendations. Please try again!"
-    
-    # Check if TMDB API is available
-    has_tmdb = bool(get_tmdb_api_key())
-    
-    if has_tmdb:
+
+    if get_tmdb_api_key():
         response = "<h2>Movie Recommendations</h2>\n"
         for i, movie in enumerate(recommendations, 1):
-            title = movie.get("title", "Unknown")
-            year = movie.get("year", "")
-            why = movie.get("why", "")
-            response += format_movie_card_with_tmdb(title, year, why, i)
-        response += '<p style="font-size: 0.8em; color: #888;">Movie data from TMDB</p>'
+            response += format_movie_card_with_tmdb(movie.get("title", "Unknown"), movie.get("year", ""), movie.get("why", ""), i)
+        response += '<p style="font-size:0.8em;color:#888;">Movie data from TMDB</p>'
         return response
     else:
-        # Fallback to text-only format if no TMDB key
         response = "Here are my movie recommendations for you:\n\n"
         for i, movie in enumerate(recommendations, 1):
-            title = movie.get("title", "Unknown")
-            year = movie.get("year", "")
-            why = movie.get("why", "")
-            response += f"**{i}. {title}** ({year})\n"
-            response += f"   {why}\n\n"
-    
-    return response
+            response += f"**{i}. {movie.get('title','Unknown')}** ({movie.get('year','')})\n   {movie.get('why','')}\n\n"
+        return response
 
 
 # ============================================================================
-# LOCAL MODEL INFERENCE  
+# LOCAL MODEL INFERENCE
 # ============================================================================
 def run_local_model(messages: list[dict], max_tokens: int, temperature: float) -> str:
-    """Run inference using the local transformers pipeline."""
     try:
-        print(f"[INFO] Starting local model inference...")
-        # Cap max_tokens at 256 for local model to prevent long generation times
         effective_max_tokens = min(max_tokens, 256)
-        print(f"[INFO] Parameters: max_tokens={effective_max_tokens} (capped from {max_tokens}), temperature={temperature}")
-        print(f"[INFO] Number of messages in context: {len(messages)}")
+        print(f"[INFO] Local model inference — max_tokens={effective_max_tokens}, temperature={temperature}")
 
-        print(f"[INFO] Running inference on {LOCAL_MODEL_NAME}...")
-        start_time = time.time()
-        result = local_pipeline(
+        # get_local_pipeline() lazy-loads the model if it hasn't been loaded yet.
+        # This covers the case where the server started in API mode but the user
+        # switched the UI toggle to "Local Model" mid-session.
+        pipe = get_local_pipeline()
+
+        result = pipe(
             messages,
             max_new_tokens=effective_max_tokens,
             do_sample=True,
-            temperature=max(temperature, 0.01), # as deterministic- too small a model let be creative
-            pad_token_id=local_pipeline.tokenizer.eos_token_id,
+            temperature=max(temperature, 0.01),
+            pad_token_id=pipe.tokenizer.eos_token_id,
         )
-        LLM_INFERENCE_DURATION.observe(time.time() - start_time)
-        print(f"[INFO] Inference complete, extracting response...")
-
         raw_content = result[0]["generated_text"][-1]["content"]
-        print(f"[INFO] Response generated ({len(raw_content)} characters)")
+        print(f"[INFO] Local model response: {len(raw_content)} characters")
         return raw_content
     except Exception as e:
         print(f"[ERROR] Local model inference failed: {e}")
@@ -570,141 +423,93 @@ def run_local_model(messages: list[dict], max_tokens: int, temperature: float) -
 
 
 # ============================================================================
-# API MODEL INFERENCE  (copied verbatim, returns full string instead of yielding)
+# API MODEL INFERENCE
 # ============================================================================
 def run_api_model(messages: list[dict], max_tokens: int, temperature: float, top_p: float) -> str:
-    """Run inference using the HuggingFace Inference API. Returns full response string."""
-    print(f"[INFO] Starting API model inference...")
-    print(f"[INFO] Model: {API_MODEL_NAME}")
-    print(f"[INFO] Parameters: max_tokens={max_tokens}, temperature={temperature}, top_p={top_p}")
-    
-    client = InferenceClient(model=API_MODEL_NAME)  # reads HF_TOKEN from environment
-    
-    print(f"[INFO] Sending request to HuggingFace API...")
+    print(f"[INFO] API model inference — model={API_MODEL_NAME}, max_tokens={max_tokens}")
+    client   = InferenceClient(model=API_MODEL_NAME)
     response = ""
-    chunk_count = 0
-    start_time = time.time()
-    for chunk in client.chat_completion(
-        messages,
-        max_tokens=max_tokens,
-        stream=True,
-        temperature=temperature,
-        top_p=top_p,
-    ):
+    for chunk in client.chat_completion(messages, max_tokens=max_tokens, stream=True, temperature=temperature, top_p=top_p):
         if chunk.choices and chunk.choices[0].delta.content:
             response += chunk.choices[0].delta.content
-            chunk_count += 1
-    LLM_INFERENCE_DURATION.observe(time.time() - start_time)
-    print(f"[INFO] API response complete ({len(response)} characters, {chunk_count} chunks)")
+    print(f"[INFO] API response: {len(response)} characters")
     return response
 
 
 # ============================================================================
-# CHAT RESPONSE LOGIC 
+# CHAT RESPONSE LOGIC
 # ============================================================================
-
 RECOMMENDATION_KEYWORDS = ["recommend", "suggest", "movie", "watch", "looking for", "i like", "want to see", "what should", "recommendations"]
 
-def build_conversational_context(genre, mood, era, viewing_pref, pace):
-    """Build the system prompt for conversational mode."""
-    return f"""
-            You are a movie recommendation assistant. Be concise and helpful.
 
-            User's Preferences:
-            - Genre: {genre or 'Not specified'}
-            - Mood: {mood or 'Not specified'}
-            - Era: {era or 'Not specified'}
-            - Context: {viewing_pref or 'Not specified'}
-            - Pace: {pace or 'Not specified'}
+def build_conversational_context(genre, mood, era, viewing_pref, pace) -> str:
+    return f"""You are a movie recommendation assistant. Be concise and helpful.
 
-            Rules:
-            1. Suggest 3-5 movies with format: **Title** (Year) - one sentence why
-            2. Keep responses under 200 words
-            3. If preferences are missing, ask ONE clarifying question
-            4. Do not repeat yourself or ramble"""
+User's Preferences:
+- Genre: {genre or 'Not specified'}
+- Mood: {mood or 'Not specified'}
+- Era: {era or 'Not specified'}
+- Context: {viewing_pref or 'Not specified'}
+- Pace: {pace or 'Not specified'}
 
-def process_structured_response(response, message):
-    """Process LLM response in structured recommendation mode."""
-    print(f"[INFO] Step 6: Cleaning model output...")
-    cleaned = clean_output(response)
-    
-    print(f"[INFO] Step 7: Parsing JSON recommendation...")
-    rec = parse_recommendation(cleaned)
-    
+Rules:
+1. Suggest 3-5 movies with format: **Title** (Year) - one sentence why
+2. Keep responses under 200 words
+3. If preferences are missing, ask ONE clarifying question
+4. Do not repeat yourself or ramble"""
+
+
+def process_structured_response(response: str, message: str) -> str:
+    cleaned  = clean_output(response)
+    rec      = parse_recommendation(cleaned)
     if rec:
-        print(f"[INFO] Step 8: Successfully parsed {len(rec.get('recommendations', []))} recommendations")
-        print(f"[INFO] Step 9: Filtering mentioned movies and fetching TMDB data...")
-        formatted = format_recommendation(rec, message)
-        print(f"[INFO] Step 10: Response ready, sending to UI")
-        return formatted
-    else:
-        print(f"[WARN] Step 8: Failed to parse JSON, returning raw response")
-        return f"Here's my recommendation based on your preferences:\n\n{cleaned}"
+        print(f"[INFO] Parsed {len(rec.get('recommendations', []))} recommendations")
+        return format_recommendation(rec, message)
+    print("[WARN] Failed to parse JSON — returning raw response")
+    return f"Here's my recommendation based on your preferences:\n\n{cleaned}"
 
-def process_conversational_response(response):
-    """Process conversational LLM response, extracting movie titles for TMDB enrichment."""
-    print(f"[INFO] Processing conversational response for TMDB enrichment...")
-    print(f"[INFO] Rsponses:  {response}")
-    # Try to extract movie titles from the response using common patterns
-    # Pattern: "Movie Title (Year)" or "**Movie Title** (Year)" or numbered lists
+
+def process_conversational_response(response: str) -> str:
     patterns = [
-        r'\*\*([^*]+)\*\*\s*\((\d{4})\)',  # **Title** (Year)
-        r'\d+\.\s*\*\*([^*]+)\*\*',  # 1. **Title**
-        r'\d+\.\s*([^(:\n]+)\s*\((\d{4})\)',  # 1. Title (Year)
-        r'"([^"]+)"\s*\((\d{4})\)',  # "Title" (Year)
+        r'\*\*([^*]+)\*\*\s*\((\d{4})\)',
+        r'\d+\.\s*\*\*([^*]+)\*\*',
+        r'\d+\.\s*([^(:\n]+)\s*\((\d{4})\)',
+        r'"([^"]+)"\s*\((\d{4})\)',
     ]
-    
     movies_found = []
     for pattern in patterns:
-        matches = re.findall(pattern, response)
-        for match in matches:
-            if isinstance(match, tuple):
-                title = match[0].strip()
-                year = int(match[1]) if len(match) > 1 and match[1].isdigit() else None
-            else:
-                title = match.strip()
-                year = None
-            if title and len(title) > 2 and title not in [m['title'] for m in movies_found]:
-                movies_found.append({'title': title, 'year': year})
-    
-    if not movies_found:
-        print(f"[INFO] No movie titles extracted, returning original response")
+        for match in re.findall(pattern, response):
+            title = (match[0] if isinstance(match, tuple) else match).strip()
+            year  = int(match[1]) if isinstance(match, tuple) and len(match) > 1 and match[1].isdigit() else None
+            if title and len(title) > 2 and title not in [m["title"] for m in movies_found]:
+                movies_found.append({"title": title, "year": year})
+
+    if not movies_found or not get_tmdb_api_key():
         return response
-    
-    print(f"[INFO] Extracted {len(movies_found)} movie titles: {[m['title'] for m in movies_found]}")
-    
-    # Check if TMDB is available
-    if not get_tmdb_api_key():
-        print(f"[INFO] No TMDB API key, returning original response")
-        return response
-    
-    # Build enhanced response with TMDB cards
+
     enhanced = "<h2>Movie Recommendations</h2>\n"
-    for i, movie in enumerate(movies_found[:5], 1):  # Limit to 5 movies
-        enhanced += format_movie_card_with_tmdb(movie['title'], movie.get('year'), "", i)
-    enhanced += '<p style="font-size: 0.8em; color: #888;">Movie data from TMDB</p>'
-    
+    for i, movie in enumerate(movies_found[:5], 1):
+        enhanced += format_movie_card_with_tmdb(movie["title"], movie.get("year"), "", i)
+    enhanced += '<p style="font-size:0.8em;color:#888;">Movie data from TMDB</p>'
     return enhanced
 
+
 def prepare_request(message, genre, mood, era, viewing_pref, pace):
-    """Prepare user answers and determine request type."""
     user_answers = {
-        "mood": mood or "Any",
-        "genres": [genre] if genre else ["Any"],
-        "pace": pace or "Balanced",
+        "mood":            mood or "Any",
+        "genres":          [genre] if genre else ["Any"],
+        "pace":            pace or "Balanced",
         "viewing_context": viewing_pref or "Any",
-        "era": era or "Any Era",
-        "open_ended": message
+        "era":             era or "Any Era",
+        "open_ended":      message,
     }
-    
     is_recommendation_request = any(kw in message.lower() for kw in RECOMMENDATION_KEYWORDS)
-    all_preferences_set = all([genre, mood, era, viewing_pref])
-    
+    all_preferences_set       = all([genre, mood, era, viewing_pref])
     return user_answers, is_recommendation_request, all_preferences_set
 
 
 # ============================================================================
-# FASTAPI  —  thin HTTP wrapper
+# FASTAPI
 # ============================================================================
 app = FastAPI(title="Movie Recommendation Backend")
 
@@ -729,81 +534,68 @@ class ChatRequest(BaseModel):
     max_tokens: int = 512
     temperature: float = 0.3
     top_p: float = 0.95
+    # Sent by the frontend toggle. None means "use the server env var default".
+    use_local_model: bool | None = None
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "mode": "local" if LOCAL_MODEL else "api"}
+    return {
+        "status": "ok",
+        # Startup default from env var
+        "default_mode": "local" if LOCAL_MODEL else "api",
+        # Whether the pipeline is actually in memory right now
+        "local_pipeline_loaded": local_pipeline is not None,
+    }
 
 
 @app.post("/chat")
 def chat_endpoint(req: ChatRequest):
-    """Single endpoint replicating the exact logic of the original respond() function."""
-    REQUEST_COUNT.inc()
-    ACTIVE_REQUESTS.inc()
-    start_time = time.time()
+    # ── Resolve which model to use for THIS request ──────────────────────────
+    # Priority: UI toggle (req.use_local_model) > env var (LOCAL_MODEL)
+    # If the frontend didn't send the field (None), fall back to the env default.
+    if req.use_local_model is not None:
+        use_local = req.use_local_model
+        print(f"[INFO] Model selected by UI toggle: {'LOCAL' if use_local else 'API'}")
+    else:
+        use_local = LOCAL_MODEL
+        print(f"[INFO] Model from env var default: {'LOCAL' if use_local else 'API'}")
+    # ─────────────────────────────────────────────────────────────────────────
 
-    try:
-        message = req.message
-        genre = req.genre
-        mood = req.mood
-        era = req.era
-        viewing_pref = req.viewing_pref
-        pace = req.pace
+    message      = req.message
+    genre        = req.genre
+    mood         = req.mood
+    era          = req.era
+    viewing_pref = req.viewing_pref
+    pace         = req.pace
 
-        print(f"\n{'='*60}")
-        print(f"[INFO] New chat request received ({'LOCAL' if LOCAL_MODEL else 'API'} MODE)")
-        print(f"[INFO] User message: {message[:100]}..." if len(message) > 100 else f"[INFO] User message: {message}")
-        print(f"[INFO] Preferences - Genre: {genre}, Mood: {mood}, Era: {era}, Viewing: {viewing_pref}, Pace: {pace}")
+    print(f"\n{'='*60}")
+    print(f"[INFO] New request — mode: {'LOCAL' if use_local else 'API'}")
+    print(f"[INFO] Message: {message[:100]}{'...' if len(message) > 100 else ''}")
+    print(f"[INFO] Prefs — Genre:{genre} Mood:{mood} Era:{era} Viewing:{viewing_pref} Pace:{pace}")
 
-        print(f"[INFO] Step 1: Building user preferences...")
-        user_answers, is_recommendation_request, all_preferences_set = prepare_request(
-            message, genre, mood, era, viewing_pref, pace
-        )
-        print(f"[INFO] Step 2: Detected recommendation request: {is_recommendation_request}")
-        print(f"[INFO] All preferences set: {all_preferences_set}")
+    user_answers, is_recommendation_request, all_preferences_set = prepare_request(
+        message, genre, mood, era, viewing_pref, pace
+    )
 
-        if is_recommendation_request and all_preferences_set:
-            STRUCTURED_MODE_COUNT.inc()
-            print(f"[INFO] Step 3: Using STRUCTURED recommendation mode")
-            print(f"[INFO] Step 4: Building few-shot prompt with examples...")
-            messages = build_messages(user_answers)
-            print(f"[INFO] Prompt built with {len(messages)} messages")
-
-            print(f"[INFO] Step 5: Running LLM inference...")
-            if LOCAL_MODEL:
-                response = run_local_model(messages, req.max_tokens, req.temperature)
-            else:
-                response = run_api_model(messages, req.max_tokens, req.temperature, req.top_p)
-
-            result = process_structured_response(response, message)
+    if is_recommendation_request and all_preferences_set:
+        print("[INFO] Mode: STRUCTURED recommendation")
+        messages = build_messages(user_answers)
+        if use_local:
+            response = run_local_model(messages, req.max_tokens, req.temperature)
         else:
-            CONVERSATIONAL_MODE_COUNT.inc()
-            print(f"[INFO] Step 3: Using CONVERSATIONAL mode")
-            print(f"[INFO] Step 4: Building conversation context...")
-            messages = [{"role": "system", "content": build_conversational_context(genre, mood, era, viewing_pref, pace)}]
-            messages.extend(req.history)
-            messages.append({"role": "user", "content": message})
-            print(f"[INFO] Context built with {len(messages)} messages (including {len(req.history)} history)")
+            response = run_api_model(messages, req.max_tokens, req.temperature, req.top_p)
+        result = process_structured_response(response, message)
+    else:
+        print("[INFO] Mode: CONVERSATIONAL")
+        messages = [{"role": "system", "content": build_conversational_context(genre, mood, era, viewing_pref, pace)}]
+        messages.extend(req.history)
+        messages.append({"role": "user", "content": message})
+        if use_local:
+            response = run_local_model(messages, req.max_tokens, req.temperature)
+        else:
+            response = run_api_model(messages, req.max_tokens, req.temperature, req.top_p)
+        result = process_conversational_response(response)
 
-            print(f"[INFO] Step 5: Running LLM inference...")
-            if LOCAL_MODEL:
-                response = run_locals_model(messages, req.max_tokens, req.temperature)
-            else:
-                response = run_api_model(messages, req.max_tokens, req.temperature, req.top_p)
-
-            print(f"[INFO] Step 6: Processing conversational response...")
-            result = process_conversational_response(response)
-
-        SUCCESSFUL_REQUESTS.inc()
-        print(f"[INFO] Request complete")
-        print(f"{'='*60}\n")
-        return {"response": result}
-
-    except Exception as e:
-        FAILED_REQUESTS.inc()
-        raise e
-
-    finally:
-        REQUEST_DURATION.observe(time.time() - start_time)
-        ACTIVE_REQUESTS.dec()
+    print(f"[INFO] Request complete\n{'='*60}\n")
+    return {"response": result}

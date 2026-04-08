@@ -1,2 +1,2 @@
 #!/bin/bash
-docker run --rm -p 23069:6969 movierecommend_frontend
+docker run --rm -p 22061:6161 movierecommend_frontend
