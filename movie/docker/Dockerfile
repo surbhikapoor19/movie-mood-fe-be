@@ -6,9 +6,8 @@ RUN pip install --upgrade pip
 
 # Install python libraries
 # Use --no-cache-dir to avoid storing pip's download cache.
-RUN pip install --no-cache-dir requests fastapi pydantic uvicorn dotenv
+RUN pip install --no-cache-dir requests fastapi pydantic uvicorn dotenv gradio
 RUN pip install --no-cache-dir transformers torch huggingface_hub==1.6.0
-RUN pip install --no-cache-dir prometheus_client
 
 # Install curl for healthcheck
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
@@ -19,13 +18,14 @@ WORKDIR /app
 # Copy application source code into container
 COPY src /app/src
 
-# Import our Port (default 6060)
-ARG PORT=6060
-ENV PORT=$PORT
+# Tell Gradio to listen on all network interfaces inside the container.
+ENV GRADIO_SERVER_NAME=0.0.0.0
 
-# Document that app listens on given port
-# App port + prometheus_client metrics port (8000)
-EXPOSE $PORT 8000
+# Tell Gradio to use port 6161 inside the container.
+ENV GRADIO_SERVER_PORT=6161
 
-# Start FastAPI app with Uvicorn
-CMD uvicorn src.app:app --host 0.0.0.0 --port $PORT
+# Document that app listens on given ports
+EXPOSE 6060 6161
+
+# Start FastAPI frontend app with Uvicorn
+CMD ["bash","src/startup.sh"]
