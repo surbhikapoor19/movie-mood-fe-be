@@ -21,14 +21,11 @@ COPY src /app/src
 # Tell Gradio to listen on all network interfaces inside the container.
 ENV GRADIO_SERVER_NAME=0.0.0.0
 
-# Tell Gradio to use port 6767 inside the container.
-ENV GRADIO_SERVER_PORT=$PORT
+# Tell Gradio to use port 6161 inside the container.
+ENV GRADIO_SERVER_PORT=6161
 
 # Document that app listens on given ports
 EXPOSE 6060 6161
 
 # Start FastAPI frontend app with Uvicorn
-CMD uvicorn src.frontend:app --host 0.0.0.0 --port 6060
-
-# Startup our app
-CMD ["python", "src/backend.py"]
+CMD ["bash","src/startup.sh"]

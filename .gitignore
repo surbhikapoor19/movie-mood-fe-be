@@ -5,7 +5,7 @@ venv/
 Test/
 
 # Environment / secrets
-.env.local
+.env
 .devcontainer
 
 # Logs
