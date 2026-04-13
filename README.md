@@ -4,12 +4,13 @@ This is our Movie Reccomendation Chatbot that we are creating for CS553, better 
 
 ## Key Features
 
-This version of the chatbot is meant to run on a single python file, making it easier for us to deploy it to the cloud.
+This chatbot can be hosted locally or on a server. The user is able to:
+- Tell the chatbot what kind of movie they like/ are in the mood to watch
+- Provide additional comments about movies they have viewed in the past
 
-## Instructions to run
+The chatbot then responds with
+- A list of movies which are recommended to the user
+- An image of the movie title card for each recommendation
 
-In order to run the docker image here, all you must do is first rename `.env.template` to `.env`, then add the secrets to the environment file.
-
-After that, build and run the image using `build.sh` and `run.sh`.
-
-These commands will create a docker container named `movie_mood`. The movie recomendation bot will be available on port 23061.
+## Overview
+This chatbot runs on a seperate frontend and backend, and the User Interface is running with Gradio. In addition, the chatbot itself is using Huggingface Models, specifically 

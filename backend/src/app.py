@@ -1,18 +1,39 @@
 """
-app.py — Combined FastAPI + Gradio app
-Gradio is mounted directly onto the FastAPI app so everything runs in a
-single process on a single port.
+backend.py  —  FastAPI backend
+FastAPI routes that expose the existing functions as HTTP endpoints.
 """
 
 import json
 import re
 import os
+import time
 import requests
-import gradio as gr
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import uvicorn
+from prometheus_client import Counter, Summary, Gauge, start_http_server
+
+# ============================================================================
+# PROMETHEUS METRICS
+# ============================================================================
+REQUEST_COUNT = Counter('chat_requests_total', 'Total chat requests received')
+SUCCESSFUL_REQUESTS = Counter('chat_requests_successful_total', 'Chat requests that succeeded')
+FAILED_REQUESTS = Counter('chat_requests_failed_total', 'Chat requests that failed')
+REQUEST_DURATION = Summary('chat_request_duration_seconds', 'End-to-end time per chat request')
+LLM_INFERENCE_DURATION = Summary('llm_inference_duration_seconds', 'Time spent in LLM inference')
+TMDB_LOOKUPS = Counter('tmdb_lookups_total', 'Total TMDB API lookups')
+TMDB_FAILURES = Counter('tmdb_lookups_failed_total', 'Failed TMDB API lookups')
+ACTIVE_REQUESTS = Gauge('active_requests', 'Number of chat requests currently being processed')
+STRUCTURED_MODE_COUNT = Counter('structured_mode_total', 'Requests handled in structured recommendation mode')
+CONVERSATIONAL_MODE_COUNT = Counter('conversational_mode_total', 'Requests handled in conversational mode')
+
+start_http_server(8000)
+
+# Always imported at the top level so it is available whether the server
+# started in local mode or API mode. Previously this was inside a conditional
+# block, which caused a NameError when a request fell back from local to API.
 from huggingface_hub import InferenceClient
 
 try:
@@ -30,6 +51,12 @@ except FileNotFoundError:
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
+# Controls whether the local model pipeline is pre-loaded at startup.
+# Even when False, the pipeline can still be lazy-loaded later if the
+# UI toggle selects "Local Model".
+LOCAL_MODEL = os.environ.get("LOCAL_MODEL", "false").lower() == "true"
+
+LOCAL_MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
 API_MODEL_NAME   = "openai/gpt-oss-120b"
 
 # ============================================================================
@@ -54,6 +81,7 @@ def search_movie_tmdb(title: str, year: int = None) -> dict | None:
         params["year"] = year
 
     try:
+        TMDB_LOOKUPS.inc()
         print(f"[INFO] TMDB: Searching for '{title}' ({year or 'any year'})...")
         response = requests.get(f"{TMDB_BASE_URL}/search/movie", params=params, timeout=10)
         response.raise_for_status()
@@ -65,6 +93,7 @@ def search_movie_tmdb(title: str, year: int = None) -> dict | None:
         print(f"[INFO] TMDB: No results found for '{title}'")
         return None
     except requests.RequestException as e:
+        TMDB_FAILURES.inc()
         print(f"[WARN] TMDB: Request failed for '{title}': {e}")
         return None
 
@@ -89,12 +118,10 @@ def format_movie_card_with_tmdb(title: str, year: int, why: str, index: int) -> 
     tmdb_data = search_movie_tmdb(title, year)
 
     if tmdb_data:
-        details     = get_movie_details_tmdb(tmdb_data.get("id")) or {}
-
         tmdb_title  = tmdb_data.get("title", title)
         tmdb_year   = tmdb_data.get("release_date", "")[:4] if tmdb_data.get("release_date") else str(year)
         rating      = tmdb_data.get("vote_average", 0)
-        overview    = details.get("overview") or tmdb_data.get("overview", "")
+        overview    = tmdb_data.get("overview", "")
         poster_path = tmdb_data.get("poster_path")
 
         if len(overview) > 200:
@@ -128,6 +155,57 @@ def format_movie_card_with_tmdb(title: str, year: int, why: str, index: int) -> 
             </div>
         </div>"""
 
+
+# ============================================================================
+# MODEL INITIALIZATION
+# ============================================================================
+local_pipeline = None
+
+if LOCAL_MODEL:
+    print(f"[MODE] Pre-loading local model at startup: {LOCAL_MODEL_NAME}")
+    try:
+        from transformers import pipeline
+        import torch
+
+        local_pipeline = pipeline(
+            "text-generation",
+            model=LOCAL_MODEL_NAME,
+            device="cpu",
+            torch_dtype=torch.float32,
+        )
+        print("[MODE] Local model loaded successfully on CPU!")
+    except Exception as e:
+        print(f"[ERROR] Failed to load local model: {e}")
+        print("[MODE] Falling back to API mode")
+        LOCAL_MODEL = False
+
+if not LOCAL_MODEL:
+    print("[MODE] Server default: HuggingFace Inference API")
+
+
+# ============================================================================
+# LAZY LOADER
+# Called by run_local_model() the first time a request needs the local model.
+# Handles the case where the server started in API mode (LOCAL_MODEL=false)
+# but the user later switches the UI toggle to "Local Model".
+# After the first load the pipeline is cached in local_pipeline and
+# subsequent calls return immediately.
+# ============================================================================
+def get_local_pipeline():
+    global local_pipeline
+    if local_pipeline is None:
+        print(f"[MODE] Lazy-loading local model on first request: {LOCAL_MODEL_NAME}")
+        from transformers import pipeline
+        import torch
+
+        local_pipeline = pipeline(
+            "text-generation",
+            model=LOCAL_MODEL_NAME,
+            device="cpu",
+            torch_dtype=torch.float32,
+        )
+        print("[MODE] Local model lazy-loaded successfully!")
+    return local_pipeline
 
 
 # ============================================================================
@@ -299,8 +377,8 @@ def parse_recommendation(response_text: str) -> dict:
 def filter_mentioned_movies(rec: dict, user_message: str) -> dict:
     if not rec:
         return rec
-    recommendations    = rec.get("recommendations", [])
-    mentioned_lower    = [m.lower() for m in rec.get("user_mentioned_movies", [])]
+    recommendations   = rec.get("recommendations", [])
+    mentioned_lower   = [m.lower() for m in rec.get("user_mentioned_movies", [])]
     user_message_lower = user_message.lower()
     filtered = []
     for movie in recommendations:
@@ -336,6 +414,35 @@ def format_recommendation(rec: dict, user_message: str = "") -> str:
         return response
 
 
+# ============================================================================
+# LOCAL MODEL INFERENCE
+# ============================================================================
+def run_local_model(messages: list[dict], max_tokens: int, temperature: float) -> str:
+    try:
+        effective_max_tokens = min(max_tokens, 256)
+        print(f"[INFO] Local model inference — max_tokens={effective_max_tokens}, temperature={temperature}")
+
+        # get_local_pipeline() lazy-loads the model if it hasn't been loaded yet.
+        # This covers the case where the server started in API mode but the user
+        # switched the UI toggle to "Local Model" mid-session.
+        pipe = get_local_pipeline()
+
+        start_time = time.time()
+        result = pipe(
+            messages,
+            max_new_tokens=effective_max_tokens,
+            do_sample=True,
+            temperature=max(temperature, 0.01),
+            pad_token_id=pipe.tokenizer.eos_token_id,
+        )
+        LLM_INFERENCE_DURATION.observe(time.time() - start_time)
+        raw_content = result[0]["generated_text"][-1]["content"]
+        print(f"[INFO] Local model response: {len(raw_content)} characters")
+        return raw_content
+    except Exception as e:
+        print(f"[ERROR] Local model inference failed: {e}")
+        return f"Error generating response: {str(e)}"
+
 
 # ============================================================================
 # API MODEL INFERENCE
@@ -344,9 +451,11 @@ def run_api_model(messages: list[dict], max_tokens: int, temperature: float, top
     print(f"[INFO] API model inference — model={API_MODEL_NAME}, max_tokens={max_tokens}")
     client   = InferenceClient(model=API_MODEL_NAME)
     response = ""
+    start_time = time.time()
     for chunk in client.chat_completion(messages, max_tokens=max_tokens, stream=True, temperature=temperature, top_p=top_p):
         if chunk.choices and chunk.choices[0].delta.content:
             response += chunk.choices[0].delta.content
+    LLM_INFERENCE_DURATION.observe(time.time() - start_time)
     print(f"[INFO] API response: {len(response)} characters")
     return response
 
@@ -375,8 +484,8 @@ Rules:
 
 
 def process_structured_response(response: str, message: str) -> str:
-    cleaned = clean_output(response)
-    rec     = parse_recommendation(cleaned)
+    cleaned  = clean_output(response)
+    rec      = parse_recommendation(cleaned)
     if rec:
         print(f"[INFO] Parsed {len(rec.get('recommendations', []))} recommendations")
         return format_recommendation(rec, message)
@@ -409,13 +518,7 @@ def process_conversational_response(response: str) -> str:
     return enhanced
 
 
-def handle_chat(message, history, genre, mood, era, viewing_pref, pace, max_tokens, temperature, top_p):
-
-    print(f"\n{'='*60}")
-    print(f"[INFO] New request — mode: 'API'")
-    print(f"[INFO] Message: {message[:100]}{'...' if len(message) > 100 else ''}")
-    print(f"[INFO] Prefs — Genre:{genre} Mood:{mood} Era:{era} Viewing:{viewing_pref} Pace:{pace}")
-
+def prepare_request(message, genre, mood, era, viewing_pref, pace):
     user_answers = {
         "mood":            mood or "Any",
         "genres":          [genre] if genre else ["Any"],
@@ -426,28 +529,13 @@ def handle_chat(message, history, genre, mood, era, viewing_pref, pace, max_toke
     }
     is_recommendation_request = any(kw in message.lower() for kw in RECOMMENDATION_KEYWORDS)
     all_preferences_set       = all([genre, mood, era, viewing_pref])
-
-    if is_recommendation_request and all_preferences_set:
-        print("[INFO] Mode: STRUCTURED recommendation")
-        messages = build_messages(user_answers)
-        response = run_api_model(messages, max_tokens, temperature, top_p)
-        result   = process_structured_response(response, message)
-    else:
-        print("[INFO] Mode: CONVERSATIONAL")
-        messages = [{"role": "system", "content": build_conversational_context(genre, mood, era, viewing_pref, pace)}]
-        messages.extend(history)
-        messages.append({"role": "user", "content": message})
-        response = run_api_model(messages, max_tokens, temperature, top_p)
-        result   = process_conversational_response(response)
-
-    print(f"[INFO] Request complete\n{'='*60}\n")
-    return result
+    return user_answers, is_recommendation_request, all_preferences_set
 
 
 # ============================================================================
 # FASTAPI
 # ============================================================================
-app = FastAPI(title="Movie Recommendation App")
+app = FastAPI(title="Movie Recommendation Backend")
 
 app.add_middleware(
     CORSMiddleware,
@@ -470,121 +558,82 @@ class ChatRequest(BaseModel):
     max_tokens: int = 512
     temperature: float = 0.3
     top_p: float = 0.95
+    # Sent by the frontend toggle. None means "use the server env var default".
+    use_local_model: bool | None = None
 
 
 @app.get("/health")
 def health():
     return {
         "status": "ok",
-        "default_mode": "api"
+        # Startup default from env var
+        "default_mode": "local" if LOCAL_MODEL else "api",
+        # Whether the pipeline is actually in memory right now
+        "local_pipeline_loaded": local_pipeline is not None,
     }
 
 
 @app.post("/chat")
 def chat_endpoint(req: ChatRequest):
-    result = handle_chat(
-        req.message, req.history, req.genre, req.mood, req.era,
-        req.viewing_pref, req.pace, req.max_tokens, req.temperature,
-        req.top_p
-    )
-    return {"response": result}
+    REQUEST_COUNT.inc()
+    ACTIVE_REQUESTS.inc()
+    req_start = time.time()
 
+    try:
+        # ── Resolve which model to use for THIS request ──────────────────────
+        if req.use_local_model is not None:
+            use_local = req.use_local_model
+            print(f"[INFO] Model selected by UI toggle: {'LOCAL' if use_local else 'API'}")
+        else:
+            use_local = LOCAL_MODEL
+            print(f"[INFO] Model from env var default: {'LOCAL' if use_local else 'API'}")
+        # ─────────────────────────────────────────────────────────────────────
 
-# ============================================================================
-# GRADIO UI
-# ============================================================================
-custom_css = """
-body, .gradio-container {
-    background-color:#EDF3F5;
-    font-family: 'Arial', sans-serif;
-}
-.gradio-container {
-    max-width: 700px;
-    margin: 0 auto;
-    padding: 20px;
-    border-radius: 15px;
-}
-h1 {
-    font-style: italic;
-    font-weight: bold;
-    font-size: 40px;
-    text-align: center;
-    color: #663356;
-    text-shadow: 2px 2px 4px #693256;
-}
-.model-toggle {
-    background-color: #f0e6f0;
-    border-radius: 10px;
-    padding: 10px;
-}
-"""
+        message      = req.message
+        genre        = req.genre
+        mood         = req.mood
+        era          = req.era
+        viewing_pref = req.viewing_pref
+        pace         = req.pace
 
-GENRES           = ["Horror", "Action", "Thriller", "Comedy", "Science-Fiction", "Drama", "Documentary", "Romance", "Animation"]
-MOODS            = ["Dark & Intense", "Light & Fun", "Emotional & Deep", "Suspenseful", "Inspirational"]
-ERAS             = ["Classic", "90s Classics", "2000s", "2010s", "Recent", "Any Era"]
-VIEWING_CONTEXTS = ["Solo", "Family", "Friends", "Any"]
-PACE_OPTIONS     = ["Fast-paced", "Slow & character-driven", "Balanced"]
+        print(f"\n{'='*60}")
+        print(f"[INFO] New request — mode: {'LOCAL' if use_local else 'API'}")
+        print(f"[INFO] Message: {message[:100]}{'...' if len(message) > 100 else ''}")
+        print(f"[INFO] Prefs — Genre:{genre} Mood:{mood} Era:{era} Viewing:{viewing_pref} Pace:{pace}")
 
-with gr.Blocks(css=custom_css) as demo:
+        user_answers, is_recommendation_request, all_preferences_set = prepare_request(
+            message, genre, mood, era, viewing_pref, pace
+        )
 
-    g_state = gr.State(None)
-    m_state = gr.State(None)
-    e_state = gr.State(None)
-    v_state = gr.State(None)
-    p_state = gr.State(None)
+        if is_recommendation_request and all_preferences_set:
+            STRUCTURED_MODE_COUNT.inc()
+            print("[INFO] Mode: STRUCTURED recommendation")
+            messages = build_messages(user_answers)
+            if use_local:
+                response = run_local_model(messages, req.max_tokens, req.temperature)
+            else:
+                response = run_api_model(messages, req.max_tokens, req.temperature, req.top_p)
+            result = process_structured_response(response, message)
+        else:
+            CONVERSATIONAL_MODE_COUNT.inc()
+            print("[INFO] Mode: CONVERSATIONAL")
+            messages = [{"role": "system", "content": build_conversational_context(genre, mood, era, viewing_pref, pace)}]
+            messages.extend(req.history)
+            messages.append({"role": "user", "content": message})
+            if use_local:
+                response = run_local_model(messages, req.max_tokens, req.temperature)
+            else:
+                response = run_api_model(messages, req.max_tokens, req.temperature, req.top_p)
+            result = process_conversational_response(response)
 
-    with gr.Row():
-        gr.Markdown("<h1>MOVIE RECOMMENDATION CHATBOT</h1>")
+        SUCCESSFUL_REQUESTS.inc()
+        print(f"[INFO] Request complete\n{'='*60}\n")
+        return {"response": result}
 
-    gr.Markdown("_Movie Recommendation Chatbot_")
+    except Exception as e:
+        FAILED_REQUESTS.inc()
+        raise e
 
-    with gr.Accordion("Preference Settings", open=True):
-        gr.Markdown("*Set your movie preferences to get personalized recommendations*")
-
-        with gr.Row():
-            with gr.Column():
-                g_radio  = gr.Radio(choices=GENRES,           label="What is your favourite genre?",            interactive=True)
-                g_status = gr.Markdown()
-                m_radio  = gr.Radio(choices=MOODS,            label="What mood are you in?",                    interactive=True)
-                m_status = gr.Markdown()
-            with gr.Column():
-                e_radio  = gr.Radio(choices=ERAS,             label="Which era of movies do you prefer?",       interactive=True)
-                e_status = gr.Markdown()
-                v_radio  = gr.Radio(choices=VIEWING_CONTEXTS, label="What is your viewing context?",            interactive=True)
-                v_status = gr.Markdown()
-            with gr.Column():
-                p_radio  = gr.Radio(choices=PACE_OPTIONS,     label="Do you prefer fast-paced or slower movies?", interactive=True)
-                p_status = gr.Markdown()
-
-    gr.Markdown("Set your preferences above, then start chatting to get recommendations!")
-
-    system_tb     = gr.Textbox(value="You are a friendly movie recommendation chatbot.", label="System message", render=False)
-    max_tokens_sl = gr.Slider(minimum=1, maximum=2048, value=512, step=1,   label="Max new tokens",            render=False)
-    temp_sl       = gr.Slider(minimum=0.1, maximum=4.0, value=0.3, step=0.1, label="Temperature",             render=False)
-    top_p_sl      = gr.Slider(minimum=0.1, maximum=1.0, value=0.95, step=0.05, label="Top-p (nucleus sampling)", render=False)
-
-    def respond(message, history, system_message, max_tokens, temperature, top_p, genre, mood, era, viewing_pref, pace):
-        yield handle_chat(message, history, genre, mood, era, viewing_pref, pace, max_tokens, temperature, top_p)
-
-    gr.ChatInterface(
-        fn=respond,
-        additional_inputs=[system_tb, max_tokens_sl, temp_sl, top_p_sl, g_state, m_state, e_state, v_state, p_state],
-        chatbot=gr.Chatbot(render_markdown=True, sanitize_html=False),
-    )
-
-    def set_genre(g):        return g, f"Genre selected: *{g}*"
-    def set_mood(m):         return m, f"Mood selected: *{m}*"
-    def set_era(e):          return e, f"Era selected: *{e}*"
-    def set_viewing_pref(v): return v, f"Viewing preference selected: *{v}*"
-    def set_pace(p):         return p, f"Pace selected: *{p}*"
-
-    g_radio.change(fn=set_genre,        inputs=g_radio, outputs=[g_state, g_status])
-    m_radio.change(fn=set_mood,         inputs=m_radio, outputs=[m_state, m_status])
-    e_radio.change(fn=set_era,          inputs=e_radio, outputs=[e_state, e_status])
-    v_radio.change(fn=set_viewing_pref, inputs=v_radio, outputs=[v_state, v_status])
-    p_radio.change(fn=set_pace,         inputs=p_radio, outputs=[p_state, p_status])
-
-
-
-# Mount Gradio onto FastAPI — single process, single port
-app = gr.mount_gradio_app(app, demo, path="/")
+    finally:
+        REQUEST_DURATION.observe(time.time() - req_start)
+        ACTIVE_REQUESTS.dec()

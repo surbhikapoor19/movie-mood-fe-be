@@ -2,10 +2,12 @@
 __pycache__/
 *.pyc
 venv/
+backEnd/
+frontEnd/
 Test/
 
 # Environment / secrets
-.env
+.env.local
 .devcontainer
 
 # Logs
